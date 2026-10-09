@@ -22,6 +22,10 @@ class AppStrings {
   static const taken = 'Taken';
   static const upcoming = 'Upcoming';
   static const notTaken = 'Not Taken';
+  static const overdue = 'Overdue';
+  static const missed = 'Missed';
+  static const missedGuidance = "If you're unsure what to do after missing a "
+      'dose, consult your pharmacist or prescriber.';
 
   // Review statuses
   static const verified = 'Verified';

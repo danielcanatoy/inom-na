@@ -501,4 +501,166 @@ void main() {
       expect(backend.entries.keys, containsAll(seriesIds));
     });
   });
+
+  group('Phase 4 follow-up reminders', () {
+    List<PlannedReminder> followUps() => backend.reminders.values
+        .where((r) => r.key.startsWith('followup'))
+        .toList();
+    int idOf(String key) => backend.reminders.entries
+        .singleWhere((entry) => entry.value.key == key)
+        .key;
+
+    test('each dose gets one follow-up 30 minutes later for the same dose',
+        () async {
+      final med = _medicine('a'); // 2-day course at 08:00.
+      expect(
+          (await scheduler.rescheduleAll([med], followUpMinutes: 30)).success,
+          isTrue);
+      final primaries = backend.reminders.values
+          .where((r) => r.key.startsWith('dose:'))
+          .toList();
+      expect(primaries, hasLength(2));
+      expect(followUps(), hasLength(2));
+      for (final primary in primaries) {
+        final followUp =
+            followUps().singleWhere((f) => f.doseId == primary.doseId);
+        expect(followUp.when.difference(primary.when),
+            const Duration(minutes: 30));
+        expect(followUp.key, ReminderPlan.followUpKey(primary.doseId));
+        expect(followUp.body, contains('same dose, not an extra one'));
+      }
+    });
+
+    test('follow-ups are not created when turned off or already taken',
+        () async {
+      final med = _medicine('a')..markTaken(DateTime(2030, 1, 1, 8));
+      await scheduler.rescheduleAll([med]);
+      expect(followUps(), isEmpty);
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      expect(followUps().map((f) => f.doseId), ['a|2030-01-02 08:00']);
+    });
+
+    test('a passed dose keeps its pending follow-up only', () async {
+      final late = ReminderCoordinator(backend, state,
+          clock: () => DateTime(2030, 1, 1, 8, 10));
+      await late.rescheduleAll([_medicine('a')], followUpMinutes: 30);
+      final today = backend.reminders.values
+          .where((r) => r.doseId == 'a|2030-01-01 08:00')
+          .toList();
+      expect(today.map((r) => r.key), ['followup:a|2030-01-01 08:00']);
+      expect(today.single.when, DateTime(2030, 1, 1, 8, 30));
+    });
+
+    test('marking a dose taken cancels its follow-up and nothing else',
+        () async {
+      final med = _medicine('a');
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      final dose = DateTime(2030, 1, 1, 8);
+      final followUpId = idOf('followup:a|2030-01-01 08:00');
+      final otherFollowUp = idOf('followup:a|2030-01-02 08:00');
+      med.markTaken(dose, at: DateTime(2030, 1, 1, 8, 5));
+      expect(
+          (await scheduler.cancelDose(med, dose, followUpMinutes: 30)).success,
+          isTrue);
+      expect(backend.canceled, contains(followUpId));
+      expect(backend.canceled, isNot(contains(otherFollowUp)));
+      expect(backend.entries.containsKey(otherFollowUp), isTrue);
+    });
+
+    test('maintenance follow-ups repeat daily and move after taking', () async {
+      final med = _medicine('a', maintenance: true);
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      final series = followUps().single;
+      expect(series.key, 'followup-daily:a:08:00');
+      expect(series.repeatDaily, isTrue);
+      expect(series.when, DateTime(2030, 1, 1, 8, 30));
+      final dose = DateTime(2030, 1, 1, 8);
+      med.markTaken(dose);
+      await scheduler.cancelDose(med, dose, followUpMinutes: 30);
+      final moved = followUps().single;
+      expect(moved.key, 'followup-daily:a:08:00');
+      expect(moved.when, DateTime(2030, 1, 2, 8, 30));
+      expect(followUps(), hasLength(1)); // No duplicate series.
+    });
+
+    test('reconciling twice registers nothing new (no duplicates)', () async {
+      final med = _medicine('a', maintenance: true, times: ['08:00', '20:00']);
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      final calls = backend.calls;
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      expect(backend.calls, calls);
+      expect(followUps().map((f) => f.key).toSet().length, followUps().length);
+    });
+
+    test('turning follow-ups off removes them; deletion removes the rest',
+        () async {
+      final med = _medicine('a', maintenance: true);
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      final followUpId = idOf('followup-daily:a:08:00');
+      await scheduler.rescheduleAll([med]);
+      expect(backend.canceled, contains(followUpId));
+      expect(followUps(), isEmpty);
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      await scheduler.rescheduleAll([], followUpMinutes: 30);
+      expect(backend.reminders, isEmpty);
+    });
+
+    test('a schedule edit replaces obsolete follow-ups', () async {
+      final med = _medicine('a', maintenance: true);
+      await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      final old = idOf('followup-daily:a:08:00');
+      final day2 = DateTime(2030, 1, 2);
+      final revised = med.withScheduleFrom(
+          ScheduleEdit.draftOf(med)
+            ..times = ['09:00']
+            ..start = day2,
+          day2);
+      await scheduler.rescheduleAll([revised], followUpMinutes: 30);
+      expect(backend.canceled, contains(old));
+      final keys = followUps().map((f) => f.key).toSet();
+      // Today's old-time dose keeps a one-off follow-up; the new time repeats.
+      expect(keys, {'followup:a|2030-01-01 08:00', 'followup-daily:a:09:00'});
+    });
+
+    test('a failed follow-up registration keeps previous reminders', () async {
+      final med = _medicine('a');
+      await scheduler.rescheduleAll([med]);
+      final before =
+          backend.entries.map((id, entry) => MapEntry(id, entry.payload));
+      backend.failCall = backend.calls + 1;
+      final result = await scheduler.rescheduleAll([med], followUpMinutes: 30);
+      expect(result.success, isFalse);
+      expect(backend.entries.map((id, entry) => MapEntry(id, entry.payload)),
+          before);
+    });
+
+    test('capacity: primary reminders always win over follow-ups', () {
+      final hourly = [
+        for (var h = 0; h < 24; h++) '${h.toString().padLeft(2, '0')}:00'
+      ];
+      final med = Medicine(
+        id: 'h',
+        name: 'Hourly sample',
+        dose: '5mg',
+        qtyPerIntake: 1,
+        scheduleKind: ScheduleKind.explicit,
+        frequencyPerDay: 24,
+        times: hourly,
+        days: 16,
+        durationConfirmed: true,
+        start: DateTime(2030, 1, 1),
+      );
+      final plan =
+          ReminderPlan.build([med], DateTime(2030, 1, 1), followUpMinutes: 30);
+      expect(plan.error, isNull);
+      final primaries =
+          plan.reminders.where((r) => r.key.startsWith('dose:')).length;
+      expect(primaries, 16 * 24 - 1); // Every future dose (00:00 is now).
+      expect(plan.reminders, hasLength(ReminderPlan.maxPending));
+      expect(
+          plan.notice,
+          contains('main medication reminders are not '
+              'affected'));
+    });
+  });
 }

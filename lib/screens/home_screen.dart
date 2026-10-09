@@ -14,7 +14,10 @@ import '../ui/brand.dart';
 import '../ui/components.dart';
 import '../ui/format.dart';
 import 'confirm_screen.dart';
+import '../services/dose_status.dart';
+import '../ui/dose_widgets.dart';
 import '../ui/routine_suggestion.dart';
+import 'calendar_screen.dart';
 import 'edit_schedule_screen.dart';
 import 'medication_details_screen.dart';
 import 'routine_screen.dart';
@@ -228,7 +231,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (_saving) return;
     final candidate = _snapshot();
     final target = candidate.firstWhere((m) => m.id == medicine.id);
-    if (!target.markTaken(dose, value: value)) return;
+    // Records the actual confirmation time; the scheduled time is unchanged.
+    if (!target.markTaken(dose, value: value, at: DateTime.now())) return;
     final result = await _commit(candidate,
         takenMedicine: value ? target : null, takenDose: value ? dose : null);
     if (result != null && !result.success) {
@@ -263,7 +267,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final candidate = [
       for (final m in _snapshot())
         if (byId[m.id] case final updated?)
-          (updated..taken = {...updated.taken, ...m.taken}.toList())
+          (updated
+            ..taken = {...updated.taken, ...m.taken}.toList()
+            ..takenAt = {...m.takenAt, ...updated.takenAt})
         else
           m,
     ];
@@ -313,6 +319,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _applyRevised([revised], 'Schedule updated. Reminders were reset.');
   }
 
+  Future<void> _openCalendar() async {
+    await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => CalendarScreen(
+                  medicines: () => _meds,
+                  isBusy: () => _saving,
+                  onTake: _take,
+                )));
+    if (mounted) setState(() {});
+  }
+
   void _pickSource() {
     showModalBottomSheet(
         context: context,
@@ -346,15 +364,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final tomorrow = DateTime(now.year, now.month, now.day + 1);
-    final todayDoses = <(Medicine, DateTime)>[];
-    for (final m in _meds) {
-      for (final d in m.allDoses(horizon: tomorrow, from: today)) {
-        if (d.isBefore(tomorrow)) todayDoses.add((m, d));
-      }
-    }
-    todayDoses.sort((a, b) => a.$2.compareTo(b.$2));
+    final todayDoses = DoseTracking.dosesOn(_meds, now);
     final lowStock = _meds.where(
         (m) => m.needsRefill && !m.isFinished && (m.daysLeft ?? 99) <= 3);
     final textTheme = Theme.of(context).textTheme;
@@ -383,14 +393,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           const SizedBox(width: 4),
         ],
       ),
-      floatingActionButton: _meds.isEmpty
+      // A fixed bar (not a floating button) so it never covers a card or
+      // its Mark as Taken / Undo actions.
+      bottomNavigationBar: _meds.isEmpty
           ? null
-          : FloatingActionButton.extended(
-              onPressed: _canScan ? _pickSource : null,
-              icon: const Icon(Icons.document_scanner_outlined),
-              label: const Text(AppStrings.scanPrescription)),
+          : Material(
+              color: AppColors.surface,
+              elevation: 8,
+              child: SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                        onPressed: _canScan ? _pickSource : null,
+                        icon: const Icon(Icons.document_scanner_outlined),
+                        label: const Text(AppStrings.scanPrescription)),
+                  ),
+                ),
+              ),
+            ),
       body: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 104),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
             Text(Fmt.longDate(now),
                 style: textTheme.bodyLarge
@@ -461,7 +486,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             if (_meds.isNotEmpty) ...[
               const SectionHeader("Today's Medication Schedule",
                   icon: Icons.today_outlined),
-              _ProgressSummary(doses: todayDoses),
+              DayProgressCard(
+                  counts: DoseTracking.countDay(_meds, now, now),
+                  dayLabel: 'today'),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                    onPressed: _saving ? null : _openCalendar,
+                    icon: const Icon(Icons.calendar_month_outlined),
+                    label: const Text('Medication Calendar')),
+              ),
+              const SizedBox(height: 4),
               _NextDose(meds: _meds, now: now),
               if (todayDoses.isEmpty)
                 const Padding(
@@ -485,15 +520,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Widget _medCard(Medicine m, DateTime now) {
-    final due = m.allDoses(horizon: now);
-    final takenDue = due.where(m.isTaken).length;
+    final due = DoseTracking.countDue(m, now);
     final total = m.totalDoses;
     final textTheme = Theme.of(context).textTheme;
     final lines = [
       m.frequencyLabel,
       if (m.times.isNotEmpty && m.scheduleKind != ScheduleKind.interval)
         'Times: ${m.times.map(Fmt.clock).join(', ')}',
-      if (due.isNotEmpty) 'Taken so far: $takenDue of ${due.length} doses due',
+      if (due.total > 0)
+        'Taken: ${due.taken}/${due.total} doses due so far'
+            '${due.missed > 0 ? ' · Missed: ${due.missed}' : ''}',
       if (total != null)
         'Marked taken: ${m.taken.toSet().length} of $total planned doses',
       if (m.allTaken) 'All scheduled doses are marked taken.',
@@ -583,42 +619,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 }
 
-/// "3 of 5 doses taken today", computed from saved taken records only.
-class _ProgressSummary extends StatelessWidget {
-  const _ProgressSummary({required this.doses});
-  final List<(Medicine, DateTime)> doses;
-
-  @override
-  Widget build(BuildContext context) {
-    if (doses.isEmpty) return const SizedBox.shrink();
-    final taken = doses.where((entry) => entry.$1.isTaken(entry.$2)).length;
-    final textTheme = Theme.of(context).textTheme;
-    return Card(
-      color: AppColors.primaryLight,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('$taken of ${doses.length} doses taken today',
-              style: textTheme.titleMedium
-                  ?.copyWith(color: AppColors.primaryDark)),
-          const SizedBox(height: 10),
-          // The text above already announces the count to screen readers.
-          ExcludeSemantics(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: LinearProgressIndicator(
-                  value: taken / doses.length,
-                  minHeight: 10,
-                  // Visible track on the light-teal card, even at 0.
-                  backgroundColor: AppColors.surface),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-}
-
 /// The next scheduled dose that has not been marked taken.
 class _NextDose extends StatelessWidget {
   const _NextDose({required this.meds, required this.now});
@@ -660,74 +660,6 @@ class _NextDose extends StatelessWidget {
               Text('${m.qtyLabel} × ${m.name} ${m.dose}'.trim(),
                   style: textTheme.bodyMedium),
             ]),
-          ),
-        ]),
-      ),
-    );
-  }
-}
-
-/// One scheduled dose with its status and the Mark as Taken action.
-class DoseCard extends StatelessWidget {
-  const DoseCard({
-    super.key,
-    required this.medicine,
-    required this.dose,
-    required this.now,
-    required this.busy,
-    required this.onChanged,
-  });
-  final Medicine medicine;
-  final DateTime dose;
-  final DateTime now;
-  final bool busy;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final taken = medicine.isTaken(dose);
-    final (label, tone, icon) = taken
-        ? (AppStrings.taken, Tone.success, Icons.check_circle)
-        : dose.isAfter(now)
-            ? (AppStrings.upcoming, Tone.info, Icons.schedule)
-            : (AppStrings.notTaken, Tone.warning, Icons.radio_button_unchecked);
-    final textTheme = Theme.of(context).textTheme;
-    final details = [
-      'Amount: ${medicine.qtyLabel}',
-      if (medicine.instructions.isNotEmpty) medicine.instructions,
-    ].join(' · ');
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 8,
-            crossAxisAlignment: WrapCrossAlignment.center,
-            children: [
-              Text(Fmt.time(dose),
-                  style: textTheme.titleLarge
-                      ?.copyWith(color: AppColors.primaryDark)),
-              StatusBadge(label: label, tone: tone, icon: icon),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text('${medicine.name} ${medicine.dose}'.trim(),
-              style: textTheme.titleMedium),
-          const SizedBox(height: 2),
-          Text(details, style: textTheme.bodyMedium),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: taken
-                ? OutlinedButton.icon(
-                    onPressed: busy ? null : () => onChanged(false),
-                    icon: const Icon(Icons.undo),
-                    label: const Text('Undo: Mark as Not Taken'))
-                : FilledButton.icon(
-                    onPressed: busy ? null : () => onChanged(true),
-                    icon: const Icon(Icons.check),
-                    label: const Text(AppStrings.markAsTaken)),
           ),
         ]),
       ),

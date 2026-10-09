@@ -8,6 +8,7 @@ import '../ui/app_strings.dart';
 import '../ui/app_theme.dart';
 import '../ui/components.dart';
 import '../ui/format.dart';
+import '../services/strength_check.dart';
 import '../ui/routine_suggestion.dart';
 
 /// Edits a SAVED medicine's future schedule on a draft copy. Returns the
@@ -34,6 +35,9 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
   bool _corrected = false;
   bool _correctionVerified = false;
   bool _endEdited = false;
+
+  /// True once the user picks the interval's first/next dose themselves.
+  bool _anchorChosen = false;
 
   DateTime _now() => widget.clock?.call() ?? DateTime.now();
 
@@ -158,7 +162,7 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
             'New: ${_describe(next)}',
             'Takes effect: ${Fmt.dateTime(effective)}',
             if (next.scheduleEnd != null)
-              'No more doses from: ${Fmt.dateTime(next.scheduleEnd!)}',
+              'Last dose: ${Fmt.dateTime(next.lastDose ?? next.scheduleEnd!)}',
             if (_corrected) 'Prescription details were corrected and verified.',
             '',
             'Past doses and taken records are kept.',
@@ -223,7 +227,9 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
             (correction || _draft.times.length < (_draft.frequencyPerDay ?? 0)))
           ActionChip(
               avatar: const Icon(Icons.add, size: 18),
-              label: const Text('Add Time'),
+              label: Text(_draft.scheduleKind == ScheduleKind.explicit
+                  ? 'Add Written Time'
+                  : 'Add Reminder Time'),
               onPressed: () => _editTime(null, correction: correction)),
       ]);
 
@@ -261,19 +267,42 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
         return [
           Text(
               'Doses stay exactly ${_draft.intervalHours} hours apart, '
-              'including overnight. You can choose when the next dose is.',
+              'including overnight. Choose the next dose; the rest follow '
+              'from it.',
               style: textTheme.bodyMedium),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(_started ? 'Next dose' : 'First dose',
+                  style: textTheme.titleSmall),
+              _anchorChosen
+                  ? const StatusBadge(
+                      label: 'You chose this', tone: Tone.success)
+                  : const StatusBadge(
+                      label: 'Unchanged',
+                      tone: Tone.info,
+                      icon: Icons.schedule),
+            ],
+          ),
+          Text(Fmt.dateTime(_draft.start), style: textTheme.bodyLarge),
           const SizedBox(height: 8),
           SizedBox(
             width: double.infinity,
             child: OutlinedButton.icon(
               onPressed: () async {
                 final picked = await _pickDateTime(_draft.start);
-                if (picked != null) _edit(() => _draft.start = picked);
+                if (picked != null) {
+                  _edit(() {
+                    _draft.start = picked;
+                    _anchorChosen = true;
+                  });
+                }
               },
               icon: const Icon(Icons.event_outlined),
-              label: Text(
-                  '${_started ? "Next dose" : "First dose"}: ${Fmt.dateTime(_draft.start)}'),
+              label: Text(_started ? 'Choose Next Dose' : 'Choose First Dose'),
             ),
           ),
           if (wake != null && wake.isNotEmpty)
@@ -288,6 +317,7 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
                         Medicine.atTime(now.add(const Duration(days: 1)), wake);
                   }
                   _draft.start = at;
+                  _anchorChosen = true;
                 }),
                 icon: const Icon(Icons.wb_twilight),
                 label: Text('Use my wake-up time (${Fmt.clock(wake)})'),
@@ -338,6 +368,16 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
                   labelText: 'Strength / dose', hintText: 'e.g. 500 mg'),
               onChanged: (v) =>
                   _edit(() => _draft.dose = v.trim(), correction: true)),
+          if (StrengthCheck.concerns(_draft.name, _draft.dose).isNotEmpty)
+            InfoBanner(
+              tone: Tone.warning,
+              title: 'Check the strength',
+              lines: [
+                ...StrengthCheck.concerns(_draft.name, _draft.dose),
+                'Compare it with your prescription and ask your pharmacist '
+                    'if unsure. IMedsU never changes a strength.',
+              ],
+            ),
           const SizedBox(height: 12),
           TextFormField(
               initialValue: _draft.qtyPerIntake > 0 ? _draft.qtyLabel : '',
@@ -377,7 +417,9 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             value: _draft.end == null,
-            title: const Text('Ongoing (confirmed maintenance)'),
+            title: const Text('Ongoing, no end date (maintenance)'),
+            subtitle: const Text('Reminders continue until you edit or '
+                'delete this medicine.'),
             onChanged: (ongoing) => _edit(() {
               _endEdited = true;
               _draft.days = null;
@@ -401,7 +443,8 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
                   }
                 },
                 icon: const Icon(Icons.event_busy_outlined),
-                label: Text('No more doses from: ${Fmt.dateTime(_draft.end!)}'),
+                label: Text(
+                    'Ends: ${Fmt.dateTime(_draft.end!)} (no doses from then)'),
               ),
             ),
           CheckboxListTile(

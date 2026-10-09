@@ -26,6 +26,12 @@ class RxParser {
   static const srcText = 'Local AI on your laptop – read the text (Ollama)';
   static const srcOffline = 'Offline reader on this phone (rule-based)';
 
+  /// Added to every medicine's warnings; the review screen shows it once.
+  static const genericReviewNote =
+      'Compare the name, strength, amount, frequency, times and duration with '
+      'your prescription. A recognized name does not mean the other details '
+      'are correct.';
+
   static const _system = '''
 You read Philippine medical prescriptions and pharmacy labels. The text comes from OCR and may contain errors.
 Text may be English, Tagalog, or Taglish.
@@ -156,7 +162,7 @@ How to read it:
         break;
       }
       final w = [
-        'Compare the name, strength, amount, frequency, times and duration with your prescription. A recognized name does not mean the other details are correct.',
+        genericReviewNote,
         if (c.warning != null) c.warning!,
         ...m.reviewNotes,
         ...m.validationErrors(),

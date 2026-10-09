@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/medicine.dart';
 import '../services/med_names.dart';
 import '../services/rx_parser.dart';
+import '../services/strength_check.dart';
 import '../ui/app_strings.dart';
 import '../ui/app_theme.dart';
 import '../ui/components.dart';
@@ -27,6 +28,13 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
   final Set<String> _verified = {};
   final Set<String> _startReviewed = {};
 
+  /// Strength the user confirmed comparing (per medicine). Editing the
+  /// strength clears it, so a changed value must be compared again.
+  final Map<String, String> _strengthChecked = {};
+
+  List<String> _strengthConcerns(Medicine m) =>
+      StrengthCheck.concerns(m.name, m.dose, sourceText: widget.rawText);
+
   void _message(String text) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
@@ -34,7 +42,11 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
         ...m.validationErrors(),
         if (m.scheduleKind == ScheduleKind.interval &&
             !_startReviewed.contains(m.id))
-          'Choose the date and time of the first dose for this interval.',
+          'Choose the first dose date and time (the time shown is only a '
+              'suggestion).',
+        if (_strengthConcerns(m).isNotEmpty && _strengthChecked[m.id] != m.dose)
+          'Compare the strength with your prescription, then tick '
+              '"I compared this strength".',
         if (m.scheduleKind == ScheduleKind.interval &&
             m.intervalHours != null &&
             m.intervalHours! > 0 &&
@@ -119,9 +131,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
           const InfoBanner(
             tone: Tone.warning,
             title: 'Check every detail',
-            message: '${AppStrings.reviewWarning} Text recognition and AI '
-                'can make mistakes, even when a medication name is '
-                'recognized.',
+            message: AppStrings.reviewWarning,
           ),
           Text(
               'Privacy: the photo and the text read from it may be sent to '
@@ -164,6 +174,15 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
               verified: _verified.contains(m.id),
               startReviewed: _startReviewed.contains(m.id),
               errors: _errors(m),
+              rawText: widget.rawText,
+              strengthConcerns: _strengthConcerns(m),
+              strengthChecked: _strengthChecked[m.id] == m.dose,
+              onStrengthChecked: (checked) => setState(() {
+                checked
+                    ? _strengthChecked[m.id] = m.dose
+                    : _strengthChecked.remove(m.id);
+                _verified.remove(m.id);
+              }),
               onChanged: () => setState(() => _verified.remove(m.id)),
               onStartReviewed: () => setState(() {
                 _startReviewed.add(m.id);
@@ -174,6 +193,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                 _meds.remove(m);
                 _verified.remove(m.id);
                 _startReviewed.remove(m.id);
+                _strengthChecked.remove(m.id);
               }),
             ),
           const SizedBox(height: 8),
@@ -195,14 +215,27 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
           child: SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                    onPressed: _save,
-                    icon: const Icon(Icons.alarm_on),
-                    label: const Text(AppStrings.saveAndSetReminders)),
-              ),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (_meds.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                        verifiedCount == _meds.length
+                            ? 'All ${_meds.length} verified. Ready to save.'
+                            : '$verifiedCount of ${_meds.length} verified. '
+                                'Verify every medication to save.',
+                        textAlign: TextAlign.center,
+                        style: textTheme.bodySmall),
+                  ),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                      onPressed: _save,
+                      icon: const Icon(Icons.alarm_on),
+                      label: const Text(AppStrings.saveAndSetReminders)),
+                ),
+              ]),
             ),
           ),
         ),
@@ -225,8 +258,16 @@ class _MedEditor extends StatefulWidget {
     required this.onStartReviewed,
     required this.onVerify,
     required this.onRemove,
+    required this.rawText,
+    required this.strengthConcerns,
+    required this.strengthChecked,
+    required this.onStrengthChecked,
     this.warning,
   });
+  final String rawText;
+  final List<String> strengthConcerns;
+  final bool strengthChecked;
+  final ValueChanged<bool> onStrengthChecked;
   final int index;
   final Medicine med;
   final bool verified;
@@ -243,6 +284,10 @@ class _MedEditor extends StatefulWidget {
 
 class _MedEditorState extends State<_MedEditor> {
   Medicine get m => widget.med;
+
+  /// Problems found when the prescription was read. They are shown live in
+  /// "Fix before verifying" instead, so they are not repeated as warnings.
+  late final Set<String> _initialErrors = m.validationErrors().toSet();
   late _DurationChoice _duration = !m.durationConfirmed
       ? _DurationChoice.unknown
       : m.days != null
@@ -364,6 +409,134 @@ class _MedEditorState extends State<_MedEditor> {
         },
       );
 
+  /// Sets the first interval dose to a time written on the prescription
+  /// (next occurrence from the suggested start). An explicit user choice.
+  void _useWrittenTime(String hhmm) {
+    final now = DateTime.now();
+    final base = m.start.isBefore(now) ? now : m.start;
+    var at = Medicine.atTime(base, hhmm);
+    if (at.isBefore(now)) {
+      at = Medicine.atTime(base.add(const Duration(days: 1)), hhmm);
+    }
+    _change(() => m.start = at);
+    widget.onStartReviewed();
+  }
+
+  /// Clock times of one day of an interval schedule, from the first dose.
+  List<String> _intervalPattern() {
+    final hours = m.intervalHours;
+    if (hours == null || hours <= 0 || hours > 24) return const [];
+    return [
+      for (var i = 0; i * hours < 24; i++)
+        Fmt.time(m.start.add(Duration(hours: i * hours))),
+    ];
+  }
+
+  Widget _timeChips({required String addLabel, required bool canAdd}) =>
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        for (var i = 0; i < m.times.length; i++)
+          InputChip(
+              label: Text(Fmt.clock(m.times[i])),
+              tooltip: 'Change this time',
+              deleteButtonTooltipMessage: 'Remove this time',
+              onPressed: () => _editTime(i),
+              onDeleted: () => _change(() {
+                    m.times.removeAt(i);
+                    m.routineLink = null;
+                  })),
+        if (canAdd)
+          ActionChip(
+              avatar: const Icon(Icons.add, size: 18),
+              label: Text(addLabel),
+              onPressed: () => _editTime(null)),
+      ]);
+
+  List<Widget> _intervalSection(TextTheme textTheme, DailyRoutine? routine) {
+    final confirmed = widget.startReviewed;
+    final pattern = _intervalPattern();
+    return [
+      TextFormField(
+          key: const ValueKey('interval-hours'),
+          initialValue: m.intervalHours?.toString() ?? '',
+          keyboardType: TextInputType.number,
+          decoration: _dec('Hours between doses', 'e.g. 8 for q8h'),
+          onChanged: (v) => _change(() => m.intervalHours = int.tryParse(v))),
+      const SizedBox(height: 12),
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: confirmed ? AppColors.successLight : AppColors.warningLight,
+          borderRadius: BorderRadius.circular(AppTheme.radius),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text('First dose', style: textTheme.titleSmall),
+              confirmed
+                  ? const StatusBadge(label: 'Confirmed', tone: Tone.success)
+                  : const StatusBadge(
+                      label: 'Not confirmed',
+                      tone: Tone.warning,
+                      icon: Icons.help_outline),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+              confirmed
+                  ? Fmt.dateTime(m.start)
+                  : 'Suggested: ${Fmt.dateTime(m.start)} (when the '
+                      'prescription was read). Choose the real first dose.',
+              style: textTheme.bodyMedium),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+                onPressed: _pickStart,
+                icon: const Icon(Icons.event_outlined),
+                label: Text(
+                    confirmed ? 'Change First Dose' : 'Choose First Dose')),
+          ),
+          if (m.times.any(Medicine.validTime) || routine != null)
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              for (final time in m.times)
+                if (Medicine.validTime(time))
+                  ActionChip(
+                      label: Text('First dose at ${Fmt.clock(time)}'),
+                      onPressed: () => _useWrittenTime(time)),
+              if (routine != null)
+                ActionChip(
+                    avatar: const Icon(Icons.wb_twilight, size: 18),
+                    label: Text('At my wake-up time '
+                        '(${Fmt.clock(routine[RoutineEvent.wake])})'),
+                    onPressed: () => _useWakeTime(routine)),
+            ]),
+        ]),
+      ),
+      if (pattern.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        ScheduleBasisBadge(m),
+        const SizedBox(height: 4),
+        Text(
+            'Every ${m.intervalHours} hours: ${pattern.join(', ')}, '
+            'repeating daily${confirmed ? '' : ' (from the suggested first dose)'}.',
+            style: textTheme.bodyMedium),
+      ],
+      if (m.times.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        Text(
+            'Times written on the prescription (used only to check the '
+            'first dose; remove any that were misread):',
+            style: textTheme.bodySmall),
+        const SizedBox(height: 6),
+        _timeChips(addLabel: '', canAdd: false),
+      ],
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
@@ -371,17 +544,25 @@ class _MedEditorState extends State<_MedEditor> {
     final routine = Store.routine;
     final errors = widget.errors;
     final valid = m.validationErrors().isEmpty;
+    final provisional = !widget.verified ||
+        (m.scheduleKind == ScheduleKind.interval && !widget.startReviewed);
     final preview = valid
         ? m.allDoses(
             from: m.start, horizon: m.start.add(const Duration(days: 2)))
         : <DateTime>[];
+    final lastDose = valid ? m.lastDose : null;
+    final initialWarning = widget.warning ?? '';
     final warnings = [
-      if (widget.warning != null) ...widget.warning!.split('\n'),
-      if (nameWarning != null && !(widget.warning ?? '').contains(nameWarning))
+      for (final line in initialWarning.split('\n'))
+        if (line.trim().isNotEmpty &&
+            line != RxParser.genericReviewNote &&
+            !_initialErrors.contains(line))
+          line,
+      if (nameWarning != null && !initialWarning.contains(nameWarning))
         nameWarning,
       for (final note in m.reviewNotes)
-        if (!(widget.warning ?? '').contains(note)) note,
-    ].where((line) => line.trim().isNotEmpty).toList();
+        if (!initialWarning.contains(note)) note,
+    ];
     final (statusLabel, statusTone) = widget.verified
         ? (AppStrings.verified, Tone.success)
         : errors.isEmpty
@@ -420,8 +601,10 @@ class _MedEditorState extends State<_MedEditor> {
           if (warnings.isNotEmpty)
             InfoBanner(
                 tone: Tone.warning,
-                title: 'Please check (noted when the prescription was read)',
+                title: 'Check these details',
                 lines: warnings),
+
+          // ---- Medicine ----
           const SectionHeader('Medicine', icon: Icons.medication_outlined),
           TextFormField(
               initialValue: m.name,
@@ -433,6 +616,26 @@ class _MedEditorState extends State<_MedEditor> {
               initialValue: m.dose,
               decoration: _dec('Strength / dose', 'e.g. 500 mg'),
               onChanged: (v) => _change(() => m.dose = v.trim())),
+          if (widget.strengthConcerns.isNotEmpty) ...[
+            InfoBanner(
+              tone: Tone.warning,
+              title: 'Check the strength',
+              lines: [
+                ...widget.strengthConcerns,
+                'Compare it with the original prescription. If unsure, ask '
+                    'your pharmacist. IMedsU never changes a strength.',
+              ],
+            ),
+            CheckboxListTile(
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              value: widget.strengthChecked,
+              onChanged: (v) => widget.onStrengthChecked(v == true),
+              title: const Text('I compared this strength'),
+              subtitle: const Text('It matches my prescription or was '
+                  'confirmed by my pharmacist.'),
+            ),
+          ],
           const SizedBox(height: 12),
           TextFormField(
               initialValue: m.qtyPerIntake > 0 ? m.qtyLabel : '',
@@ -442,6 +645,8 @@ class _MedEditorState extends State<_MedEditor> {
                   'Number of tablets, capsules or mL each time.'),
               onChanged: (v) =>
                   _change(() => m.qtyPerIntake = double.tryParse(v) ?? 0)),
+
+          // ---- Schedule ----
           const SectionHeader('Schedule', icon: Icons.schedule),
           _dropdown<ScheduleKind>(
             value: m.scheduleKind,
@@ -459,7 +664,9 @@ class _MedEditorState extends State<_MedEditor> {
             }),
           ),
           const SizedBox(height: 12),
-          if (m.scheduleKind == ScheduleKind.daily)
+          if (m.scheduleKind == ScheduleKind.interval)
+            ..._intervalSection(textTheme, routine),
+          if (m.scheduleKind == ScheduleKind.daily) ...[
             TextFormField(
                 key: const ValueKey('daily-frequency'),
                 initialValue: m.frequencyPerDay?.toString() ?? '',
@@ -469,104 +676,66 @@ class _MedEditorState extends State<_MedEditor> {
                       m.frequencyPerDay = int.tryParse(v);
                       m.routineLink = null;
                     })),
-          if (m.scheduleKind == ScheduleKind.interval) ...[
-            TextFormField(
-                key: const ValueKey('interval-hours'),
-                initialValue: m.intervalHours?.toString() ?? '',
-                keyboardType: TextInputType.number,
-                decoration: _dec('Hours between doses', 'e.g. 8 for q8h'),
-                onChanged: (v) =>
-                    _change(() => m.intervalHours = int.tryParse(v))),
-            if (m.times.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                    'Written on the prescription: '
-                    '${m.times.map(Fmt.clock).join(', ')}. Use this to choose '
-                    'the first dose; it does not replace the interval.',
-                    style: textTheme.bodyMedium),
-              ),
-            if (!widget.startReviewed)
-              const InfoBanner(
-                  tone: Tone.info,
-                  message: 'Choose the first dose date and time below.'),
-            if (routine != null)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () => _useWakeTime(routine),
-                  icon: const Icon(Icons.wb_twilight),
-                  label: Text('Use my wake-up time for the first dose '
-                      '(${Fmt.clock(routine[RoutineEvent.wake])})'),
-                ),
-              ),
-          ],
-          if (m.scheduleKind == ScheduleKind.daily ||
-              m.scheduleKind == ScheduleKind.explicit ||
-              m.scheduleKind == ScheduleKind.interval) ...[
             const SizedBox(height: 8),
             ScheduleBasisBadge(m),
             const SizedBox(height: 6),
             Text(
-                m.scheduleKind == ScheduleKind.daily && m.routineLink != null
-                    ? 'Times based on My Daily Routine. They are reminder '
-                        'suggestions, not part of your prescription.'
-                    : m.scheduleKind == ScheduleKind.daily
-                        ? 'Suggested times for this daily frequency. Adjust them '
-                            'to match your prescription before verifying.'
-                        : m.scheduleKind == ScheduleKind.interval
-                            ? 'Written times for this interval. Correct any '
-                                'misread time; the first dose and interval must '
-                                'match them.'
-                            : 'Times read or entered. Compare them with your '
-                                'prescription before verifying.',
+                m.routineLink != null
+                    ? 'Reminder times from My Daily Routine (not part of '
+                        'your prescription).'
+                    : 'Suggested reminder times. Adjust them to match your '
+                        'prescription.',
                 style: textTheme.bodySmall),
             const SizedBox(height: 6),
-            Wrap(spacing: 8, runSpacing: 8, children: [
-              for (var i = 0; i < m.times.length; i++)
-                InputChip(
-                    label: Text(Fmt.clock(m.times[i])),
-                    tooltip: 'Change this time',
-                    deleteButtonTooltipMessage: 'Remove this time',
-                    onPressed: () => _editTime(i),
-                    onDeleted: () => _change(() {
-                          m.times.removeAt(i);
-                          m.routineLink = null;
-                        })),
-              ActionChip(
-                  avatar: const Icon(Icons.add, size: 18),
-                  label: const Text('Add Time'),
-                  onPressed: () => _editTime(null)),
-            ]),
-            if (m.scheduleKind == ScheduleKind.daily)
-              RoutineSuggestionPanel(
-                key: ValueKey('routine-${m.frequencyPerDay}'),
-                medicine: m,
-                routine: routine,
-                onApply: (times, link) => _change(() {
-                  m.times = [...times];
-                  m.routineLink = link;
-                }),
-                onSetUpRoutine: routine == null ? _setUpRoutine : null,
-              ),
+            _timeChips(addLabel: 'Add Reminder Time', canAdd: true),
+            RoutineSuggestionPanel(
+              key: ValueKey('routine-${m.frequencyPerDay}'),
+              medicine: m,
+              routine: routine,
+              onApply: (times, link) => _change(() {
+                m.times = [...times];
+                m.routineLink = link;
+              }),
+              onSetUpRoutine: routine == null ? _setUpRoutine : null,
+            ),
           ],
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-                onPressed: _pickStart,
-                icon: const Icon(Icons.event_outlined),
-                label: Text('First dose / start: ${Fmt.dateTime(m.start)}')),
-          ),
+          if (m.scheduleKind == ScheduleKind.explicit) ...[
+            ScheduleBasisBadge(m),
+            const SizedBox(height: 6),
+            Text('Clock times written on the prescription. Compare each one.',
+                style: textTheme.bodySmall),
+            const SizedBox(height: 6),
+            _timeChips(addLabel: 'Add Written Time', canAdd: true),
+          ],
+          if (m.scheduleKind != ScheduleKind.interval) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                  onPressed: _pickStart,
+                  icon: const Icon(Icons.event_outlined),
+                  label: Text('Start: ${Fmt.dateTime(m.start)}')),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text('Reminders begin from this date and time.',
+                  style: textTheme.bodySmall),
+            ),
+          ],
+
+          // ---- Duration ----
           const SectionHeader('Duration', icon: Icons.date_range_outlined),
           _dropdown<_DurationChoice>(
             value: _duration,
             label: 'How long to take it (as prescribed)',
             items: const [
               (_DurationChoice.unknown, 'Not clear yet'),
-              (_DurationChoice.days, 'Number of days'),
-              (_DurationChoice.end, 'Until an end date and time'),
-              (_DurationChoice.maintenance, 'Ongoing (confirmed maintenance)'),
+              (_DurationChoice.days, 'For a number of days'),
+              (_DurationChoice.end, 'Until a specific date'),
+              (
+                _DurationChoice.maintenance,
+                'Ongoing, no end date (maintenance)'
+              ),
             ],
             onChanged: (choice) => _change(() {
               _duration = choice;
@@ -586,7 +755,8 @@ class _MedEditorState extends State<_MedEditor> {
                     key: const ValueKey('duration-days'),
                     initialValue: m.days?.toString() ?? '',
                     keyboardType: TextInputType.number,
-                    decoration: _dec('How many days'),
+                    decoration: _dec('How many days', 'e.g. 7',
+                        'Counted from the first dose or start time.'),
                     onChanged: (v) => _change(() {
                           m.days = int.tryParse(v);
                           m.end = null;
@@ -602,9 +772,27 @@ class _MedEditorState extends State<_MedEditor> {
                     icon: const Icon(Icons.event_busy_outlined),
                     label: Text(m.end == null
                         ? 'Choose the end date and time'
-                        : 'No more doses from: ${Fmt.dateTime(m.end!)}')),
+                        : 'Ends: ${Fmt.dateTime(m.end!)} (no doses from then)')),
               ),
             ),
+          if (_duration == _DurationChoice.maintenance)
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(
+                  'Reminders continue every day until you edit or delete this '
+                  'medicine. Choose this only if your prescription says to '
+                  'continue.',
+                  style: textTheme.bodySmall),
+            ),
+          if (lastDose != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text('Last dose: ${Fmt.dateTime(lastDose)}',
+                  style: textTheme.bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w600)),
+            ),
+
+          // ---- Other details ----
           const SectionHeader('Other details', icon: Icons.notes_outlined),
           TextFormField(
               initialValue: m.stock?.toString() ?? '',
@@ -616,40 +804,42 @@ class _MedEditorState extends State<_MedEditor> {
           TextFormField(
               initialValue: m.instructions,
               maxLines: null,
-              decoration: _dec('Directions as written', null,
-                  'Keep the original wording. Clarify anything unclear with your pharmacist.'),
+              decoration: _dec(
+                  'Directions as written', null, 'Keep the original wording.'),
               onChanged: (v) => _change(() => m.instructions = v.trim())),
-          if (errors.isNotEmpty)
-            InfoBanner(
-                tone: Tone.error, title: 'Fix before verifying', lines: errors),
+
+          // ---- Preview ----
           if (preview.isNotEmpty) ...[
-            const SectionHeader('Schedule preview',
+            SectionHeader(
+                provisional
+                    ? 'Schedule preview (not confirmed yet)'
+                    : 'Schedule preview',
                 icon: Icons.event_note_outlined,
-                subtitle: 'First doses from the start'),
+                subtitle: provisional
+                    ? 'This becomes your schedule only after you verify it.'
+                    : 'First doses from the start'),
             for (final dose in preview.take(8))
               Padding(
                 padding: const EdgeInsets.only(bottom: 2),
                 child: Text('•  ${Fmt.dateTime(dose)}',
-                    style: textTheme.bodyMedium),
+                    style: textTheme.bodyMedium?.copyWith(
+                        color: provisional ? AppColors.textSecondary : null)),
               ),
           ],
-          if (m.scheduleEnd != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text('No more doses from: ${Fmt.dateTime(m.scheduleEnd!)}',
-                  style: textTheme.bodyMedium
-                      ?.copyWith(fontWeight: FontWeight.w600)),
-            ),
-          const SizedBox(height: 8),
-          const Divider(),
+
+          // ---- Verification ----
+          const SectionHeader('Verification', icon: Icons.verified_outlined),
+          if (errors.isNotEmpty)
+            InfoBanner(
+                tone: Tone.error, title: 'Fix before verifying', lines: errors),
           CheckboxListTile(
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
               value: widget.verified,
               title: Text(AppStrings.iveVerifiedThis,
                   style: textTheme.titleMedium),
-              subtitle: const Text('I checked the name, strength, amount, '
-                  'directions, duration and schedule against my prescription.'),
+              subtitle: const Text('Name, strength, amount, schedule, '
+                  'duration and directions match my prescription.'),
               onChanged: (checked) {
                 if (checked == true) {
                   widget.onVerify();

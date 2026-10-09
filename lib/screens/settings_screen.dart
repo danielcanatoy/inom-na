@@ -26,6 +26,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _permissionsChecked = false;
   String? _reminderResult;
   bool _reminderBusy = false;
+  bool _followEnabled = Store.followUpEnabled;
+  int _followMinutes = Store.followUpMinutes;
+
+  Future<void> _setFollowUp({bool? enabled, int? minutes}) async {
+    final nextEnabled = enabled ?? _followEnabled;
+    final nextMinutes = minutes ?? _followMinutes;
+    setState(() => _reminderBusy = true);
+    try {
+      await Store.setFollowUp(enabled: nextEnabled, minutes: nextMinutes);
+      setState(() {
+        _followEnabled = nextEnabled;
+        _followMinutes = nextMinutes;
+      });
+      // Reconcile now so follow-ups are added or removed immediately.
+      final result = await Scheduler.rescheduleAll(Store.meds());
+      if (mounted) {
+        setState(() => _reminderResult = result.success
+            ? result.message ??
+                (nextEnabled
+                    ? 'Follow-up reminders are on ($nextMinutes minutes).'
+                    : 'Follow-up reminders are off.')
+            : result.message ?? 'Reminders could not be updated.');
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() =>
+            _reminderResult = 'The follow-up setting could not be saved.');
+      }
+    } finally {
+      if (mounted) setState(() => _reminderBusy = false);
+    }
+  }
 
   @override
   void initState() {
@@ -299,6 +331,42 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 const Icon(Icons.notifications_active_outlined),
                             label: const Text(AppStrings.sendTestReminder)),
                       ),
+                      const Divider(height: 32),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        value: _followEnabled,
+                        onChanged: _reminderBusy
+                            ? null
+                            : (value) => _setFollowUp(enabled: value),
+                        title: Text('Follow-Up Reminders',
+                            style: textTheme.titleMedium),
+                        subtitle: const Text(
+                            "Remind me again if I haven't marked my "
+                            'medication as taken. On by default, 30 minutes after '
+                            'the scheduled time.'),
+                      ),
+                      if (_followEnabled) ...[
+                        Text('Remind me again after',
+                            style: textTheme.bodyMedium),
+                        const SizedBox(height: 6),
+                        SegmentedButton<int>(
+                          segments: [
+                            for (final minutes in Store.followUpChoices)
+                              ButtonSegment(
+                                  value: minutes, label: Text('$minutes min')),
+                          ],
+                          selected: {_followMinutes},
+                          onSelectionChanged: _reminderBusy
+                              ? null
+                              : (value) => _setFollowUp(minutes: value.first),
+                        ),
+                        const SizedBox(height: 6),
+                      ],
+                      Text(
+                          'A follow-up is about the same dose, not an extra dose. It '
+                          'is cancelled when you mark the dose as taken. Each dose '
+                          'gets at most one follow-up.',
+                          style: textTheme.bodySmall),
                       if (_reminderResult != null)
                         InfoBanner(tone: Tone.info, message: _reminderResult),
                       const SizedBox(height: 8),

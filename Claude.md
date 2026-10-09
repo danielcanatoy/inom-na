@@ -122,6 +122,14 @@ Camera / gallery / typed prescription
 - Schedule history: `Medicine.revisions` (backward-compatible optional JSON field). Earlier rules generate doses before each revision's `until`; never rewrite taken keys or past dose times. Clock-time edits apply from midnight (today only if no dose today has passed/been taken); interval edits apply from the edit time and require a full interval after the last earlier dose. Finite courses keep the same remaining dose count.
 - Routine storage key: `daily_routine_v1`. Picker defaults are never treated as a saved routine.
 
+### Phase 4 — follow-ups, dose status, intake history, weekly calendar (October 10, 2026, branch `phase4-reminders-tracking`)
+
+- Implemented and code-verified; on-device alarm registration observed via `adb shell dumpsys alarm` (not delivery). Await approval before Phase 5.
+- `Medicine.takenAt` (optional `takenAt` JSON map) stores actual confirmation times for new confirmations; legacy taken keys have none (never invent).
+- `lib/services/dose_status.dart`: Upcoming / Taken / Overdue (<2 h) / Missed (>=2 h, tracking label only). Show pharmacist guidance; never give missed-dose advice.
+- Follow-ups: `ReminderPlan.build(followUpMinutes:)`, keys `followup:<doseId>` (one-off, finite courses within 7 days) and `followup-daily:<medId>:<HH:mm>` (repeating, ongoing). Primary reminders get capacity first. `cancelDose` removes the dose's follow-up. Settings: `followup_enabled` (default true), `followup_minutes` (10/30/60, default 30).
+- `lib/screens/calendar_screen.dart`, `lib/ui/dose_widgets.dart`. Home Scan button is a fixed bottom bar (no FAB over card actions).
+
 ### Remaining Phase 1/device risks
 
 - Real HyperOS reminder delivery while locked/backgrounded, after app termination and after reboot.

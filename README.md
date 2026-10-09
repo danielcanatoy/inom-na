@@ -25,6 +25,9 @@ After a doctor's visit, patients forget doses, take them twice, or stop antibiot
 4. **Review Prescription screen:** the user checks, corrects and verifies every medication. Unclear, missing or invalid details block saving.
 5. **Offline reminders** for each dose, with a "Mark as Taken" checklist and today's progress.
    - **My Daily Routine** (wake-up, meals, bedtime) suggests reminder times for general daily frequencies. Suggestions are applied only when the user taps "Use These Times"; prescribed clock times and fixed intervals (q6h/q8h) are never replaced, and before/after-meal offsets are never assumed.
+   - **Follow-up reminders** (on by default, 10/30/60 minutes, Settings → Notifications): one extra notification for the SAME dose if it is not marked taken; cancelled when marked taken. Never an extra dose. Repeating follow-ups for ongoing medicines; finite courses get follow-ups for the next 7 days, refreshed whenever the app opens.
+   - **Dose status:** Upcoming, Taken, Overdue (unconfirmed, under 2 hours), Missed (no confirmation recorded after 2 hours — a tracking label, not proof). New confirmations store the actual time; older records show "time not recorded".
+   - **Medication Calendar:** weekly strip with a chronological timeline per day; late confirmations allowed for past doses.
    - **Edit Schedule** changes future reminders only. Past doses, taken records and the number of doses in a finite course are kept. Routine changes propose updates for routine-linked medicines and apply only after confirmation.
 6. **Running-low alert** about 3 days before the purchased quantity runs out.
 7. **Dose record** (for example "Marked taken: 19 of 21 planned doses") that can be shown to a doctor.

@@ -167,7 +167,7 @@ void main() {
     await tapSave(tester);
     expect(returned, isNull);
 
-    final anchor = find.textContaining('First dose / start:');
+    final anchor = find.text('Choose First Dose');
     await tester.ensureVisible(anchor);
     await tester.pump();
     await tester.tap(anchor);
@@ -197,7 +197,7 @@ void main() {
     List<Medicine>? returned;
     await openConfirmation(tester, medicine, (value) => returned = value);
 
-    final anchor = find.textContaining('First dose / start:');
+    final anchor = find.text('Choose First Dose');
     await tester.ensureVisible(anchor);
     await tester.pump();
     await tester.tap(anchor);

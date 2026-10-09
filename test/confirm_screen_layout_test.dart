@@ -133,7 +133,7 @@ void main() {
       (tester) async {
     await pumpConfirm(tester, layoutCases()['interval + days']!,
         width: 320, textScale: 2.0);
-    for (final label in ['Exact interval (q6h/q8h)', 'Number of days']) {
+    for (final label in ['Exact interval (q6h/q8h)', 'For a number of days']) {
       final text = tester.widget<Text>(find.text(label).first);
       expect(text.overflow, isNot(TextOverflow.ellipsis));
       expect(text.maxLines, isNull);

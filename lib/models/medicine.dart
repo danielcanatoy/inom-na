@@ -16,6 +16,7 @@ class Medicine {
     this.stock,
     DateTime? start,
     List<String>? taken,
+    Map<String, DateTime>? takenAt,
     this.scheduleKind = ScheduleKind.unknown,
     this.frequencyPerDay,
     this.intervalHours,
@@ -28,6 +29,7 @@ class Medicine {
   })  : times = List<String>.of(times ?? []),
         start = start ?? DateTime.now(),
         taken = (taken ?? []).toSet().toList(),
+        takenAt = Map<String, DateTime>.of(takenAt ?? {}),
         reviewNotes = List<String>.of(reviewNotes ?? []),
         revisions = List<ScheduleRevision>.of(revisions ?? []);
 
@@ -41,6 +43,14 @@ class Medicine {
   int? stock;
   DateTime start;
   List<String> taken; // Scheduled keys, never actual intake timestamps.
+
+  /// Actual confirmation time for doses marked taken in Phase 4 or later,
+  /// keyed like [taken]. Older taken keys have no entry: their actual intake
+  /// time is unknown and is never invented.
+  Map<String, DateTime> takenAt;
+
+  /// When the user confirmed [scheduled] as taken, if that was recorded.
+  DateTime? takenTimeOf(DateTime scheduled) => takenAt[keyOf(scheduled)];
   ScheduleKind scheduleKind;
   int? frequencyPerDay;
   int? intervalHours;
@@ -144,14 +154,18 @@ class Medicine {
   bool isTaken(DateTime scheduled) => taken.contains(keyOf(scheduled));
 
   /// Returns false for a repeated action, so reminders/storage need not update.
-  bool markTaken(DateTime scheduled, {bool value = true}) {
+  /// [at] is the actual confirmation time. A repeated confirmation keeps the
+  /// first record; undo removes only this dose's record.
+  bool markTaken(DateTime scheduled, {bool value = true, DateTime? at}) {
     final key = keyOf(scheduled);
     final present = taken.contains(key);
     if (value == present) return false;
     if (value) {
       taken.add(key);
+      if (at != null) takenAt[key] = at;
     } else {
       taken.removeWhere((item) => item == key);
+      takenAt.remove(key);
     }
     return true;
   }
@@ -364,6 +378,15 @@ class Medicine {
     return out;
   }
 
+  /// The final scheduled dose of a finite course (null if ongoing or PRN).
+  /// Clearer for people than the exclusive [scheduleEnd].
+  DateTime? get lastDose {
+    final stop = scheduleEnd;
+    if (stop == null || isPrn) return null;
+    final doses = allDoses(horizon: stop);
+    return doses.isEmpty ? null : doses.last;
+  }
+
   int? get totalDoses {
     if (revisions.isNotEmpty) {
       // Past rules count their actual doses; the current rule continues to
@@ -421,12 +444,14 @@ class Medicine {
     return Medicine.fromJson(next.toJson())
       ..id = id
       ..taken = List<String>.of(taken)
+      ..takenAt = Map<String, DateTime>.of(takenAt)
       ..revisions = kept;
   }
 
   /// This medicine's current schedule rule, without history.
   Map<String, dynamic> ruleJson() => toJson()
     ..remove('taken')
+    ..remove('takenAt')
     ..remove('revisions')
     ..remove('routineLink');
 
@@ -470,6 +495,9 @@ class Medicine {
         'stock': stock,
         'start': start.toIso8601String(),
         'taken': taken.toSet().toList(),
+        if (takenAt.isNotEmpty)
+          'takenAt': takenAt
+              .map((key, value) => MapEntry(key, value.toIso8601String())),
         'scheduleKind': scheduleKind.name,
         'frequencyPerDay': frequencyPerDay,
         'intervalHours': intervalHours,
@@ -512,6 +540,8 @@ class Medicine {
       stock: json['stock'] as int?,
       start: start,
       taken: (json['taken'] as List?)?.cast<String>(),
+      takenAt: _parseTakenAt(json['takenAt'],
+          (json['taken'] as List?)?.cast<String>().toSet() ?? const {}),
       scheduleKind: kind,
       frequencyPerDay:
           oldSchema ? times.length : json['frequencyPerDay'] as int?,
@@ -530,6 +560,21 @@ class Medicine {
       ],
     );
   }
+}
+
+/// Only timestamps for doses that are still marked taken are kept.
+Map<String, DateTime> _parseTakenAt(Object? raw, Set<String> taken) {
+  if (raw == null) return {};
+  if (raw is! Map) throw const FormatException('Invalid intake history');
+  final result = <String, DateTime>{};
+  raw.forEach((key, value) {
+    final at = value is String ? DateTime.tryParse(value) : null;
+    if (key is! String || at == null) {
+      throw const FormatException('Invalid intake history');
+    }
+    if (taken.contains(key)) result[key] = at;
+  });
+  return result;
 }
 
 /// An earlier schedule rule that applied to doses before [until].

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/medicine.dart';
+import '../services/strength_check.dart';
 import '../ui/app_theme.dart';
 import '../ui/components.dart';
 import '../ui/format.dart';
@@ -60,12 +61,12 @@ class MedicationDetailsScreen extends StatelessWidget {
                     _row(context, 'Started', Fmt.dateTime(m.originalStart)),
                     _row(
                         context,
-                        'Ends',
+                        'Last dose',
                         m.isPrn
-                            ? 'Not applicable'
+                            ? 'Not applicable (as needed)'
                             : end == null
-                                ? 'Ongoing (maintenance)'
-                                : 'No more doses from ${Fmt.dateTime(end)}'),
+                                ? 'Ongoing, no end date (maintenance)'
+                                : Fmt.dateTime(m.lastDose ?? end)),
                     _row(
                         context,
                         'Directions as written',
@@ -81,6 +82,17 @@ class MedicationDetailsScreen extends StatelessWidget {
                   ]),
             ),
           ),
+          if (StrengthCheck.concerns(m.name, m.dose).isNotEmpty)
+            InfoBanner(
+              tone: Tone.warning,
+              title: 'Check the strength',
+              lines: [
+                ...StrengthCheck.concerns(m.name, m.dose),
+                'Compare it with your prescription and ask your pharmacist '
+                    'if unsure. To correct it, use Edit Schedule > Correct '
+                    'prescription details.',
+              ],
+            ),
           if (m.revisions.isNotEmpty) ...[
             const SectionHeader('Schedule changes', icon: Icons.history),
             for (final revision in m.revisions)

@@ -62,14 +62,26 @@ class PlannedReminder {
 }
 
 class ReminderPlan {
-  const ReminderPlan(this.reminders, {this.error});
+  const ReminderPlan(this.reminders, {this.error, this.notice});
   final List<PlannedReminder> reminders;
   final String? error;
+
+  /// Non-blocking information, e.g. follow-ups limited by capacity.
+  final String? notice;
+
+  /// Finite courses get one-off follow-ups this far ahead; they are refreshed
+  /// whenever reminders are reconciled (app start/resume and every save).
+  static const followUpWindow = Duration(days: 7);
 
   // A conservative application budget, not a universal Android alarm limit.
   static const maxPending = 400;
 
-  static ReminderPlan build(List<Medicine> medicines, DateTime now) {
+  /// [followUpMinutes]: when set, each scheduled dose also gets ONE
+  /// follow-up reminder that many minutes later, for the SAME dose. It is
+  /// cancelled when the dose is marked taken. Primary reminders always get
+  /// capacity first; follow-ups never change the number of doses.
+  static ReminderPlan build(List<Medicine> medicines, DateTime now,
+      {int? followUpMinutes}) {
     final result = <PlannedReminder>[];
     final medicineIds = <String>{};
     for (final medicine in medicines) {
@@ -173,8 +185,86 @@ class ReminderPlan {
         }
       }
     }
+    String? notice;
+    if (followUpMinutes != null && followUpMinutes > 0) {
+      final delay = Duration(minutes: followUpMinutes);
+      final followUps = [
+        for (final medicine in medicines) ..._followUps(medicine, now, delay)
+      ]..sort((a, b) => a.when.compareTo(b.when));
+      final room = maxPending - result.length;
+      if (followUps.length > room) {
+        notice = 'Some follow-up reminders could not be set because of the '
+            'reminder limit. Your main medication reminders are not affected.';
+      }
+      result.addAll(followUps.take(room < 0 ? 0 : room));
+    }
     result.sort((a, b) => a.when.compareTo(b.when));
-    return ReminderPlan(result);
+    return ReminderPlan(result, notice: notice);
+  }
+
+  static List<PlannedReminder> _followUps(
+      Medicine medicine, DateTime now, Duration delay) {
+    if (medicine.isPrn) return const [];
+    final out = <PlannedReminder>[];
+    final lower = now.subtract(delay); // Doses whose follow-up is still due.
+    final end = medicine.scheduleEnd;
+    bool pending(DateTime dose) =>
+        !medicine.isTaken(dose) && dose.add(delay).isAfter(now);
+    if (end != null) {
+      final windowEnd = now.add(followUpWindow);
+      final horizon = end.isBefore(windowEnd) ? end : windowEnd;
+      for (final dose in medicine.allDoses(horizon: horizon, from: lower)) {
+        if (pending(dose)) out.add(_followUp(medicine, dose, delay));
+      }
+      return out;
+    }
+    final anchor = now.isBefore(medicine.start) ? medicine.start : now;
+    final byTime = <String, DateTime>{};
+    for (final dose in medicine.allDoses(
+        horizon: anchor.add(const Duration(days: 1)), from: lower)) {
+      if (medicine.revisions.isNotEmpty && dose.isBefore(medicine.start)) {
+        if (pending(dose)) out.add(_followUp(medicine, dose, delay));
+        continue;
+      }
+      var next = dose;
+      while (!pending(next)) {
+        next = DateTime(next.year, next.month, next.day + 1, next.hour,
+            next.minute, next.second, next.millisecond, next.microsecond);
+      }
+      byTime.putIfAbsent(_time(dose), () => next);
+    }
+    for (final next in byTime.values) {
+      out.add(_followUp(medicine, next, delay, repeatDaily: true));
+    }
+    return out;
+  }
+
+  static PlannedReminder _followUp(
+          Medicine medicine, DateTime dose, Duration delay,
+          {bool repeatDaily = false}) =>
+      PlannedReminder(
+        key: repeatDaily
+            ? followUpSeriesKey(medicine.id, _time(dose))
+            : followUpKey(medicine.doseId(dose)),
+        doseId: medicine.doseId(dose),
+        medicineId: medicine.id,
+        when: dose.add(delay),
+        title: followUpTitle,
+        body: 'Your ${_clock(dose)} dose '
+            '(${'${medicine.qtyLabel} × ${medicine.name} ${medicine.dose}'.trim()}) '
+            'is not marked as taken. If you already took it, mark it in '
+            'IMedsU. This is the same dose, not an extra one.',
+        repeatDaily: repeatDaily,
+      );
+
+  static const followUpTitle = 'Not marked as taken yet';
+  static String followUpKey(String doseId) => 'followup:$doseId';
+  static String followUpSeriesKey(String medicineId, String time) =>
+      'followup-daily:$medicineId:$time';
+  static String _clock(DateTime d) {
+    final hour = d.hour % 12 == 0 ? 12 : d.hour % 12;
+    return '$hour:${d.minute.toString().padLeft(2, '0')} '
+        '${d.hour < 12 ? 'AM' : 'PM'}';
   }
 
   static const doseTitle = 'Time for your medication';

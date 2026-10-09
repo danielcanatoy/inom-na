@@ -74,9 +74,13 @@ void main() {
       await pumpScreen(tester, const HomeScreen());
       expect(find.text("Today's Medication Schedule"), findsOneWidget);
       expect(find.text('0 of 2 doses taken today'), findsOneWidget);
-      expect(find.text('Mark as Taken'), findsNWidgets(2));
+      // Scan is a fixed bar, not a floating button over dose actions.
+      expect(find.byType(FloatingActionButton), findsNothing);
+      expect(find.text('Scan Prescription'), findsOneWidget);
+      // The 12:01 AM dose has passed, so its button says "(late)".
+      expect(find.textContaining('Mark as Taken'), findsNWidgets(2));
 
-      await tester.tap(find.text('Mark as Taken').first);
+      await tester.tap(find.textContaining('Mark as Taken').first);
       await tester.pumpAndSettle();
       expect(find.text('1 of 2 doses taken today'), findsOneWidget);
       expect(find.text('Taken'), findsOneWidget);

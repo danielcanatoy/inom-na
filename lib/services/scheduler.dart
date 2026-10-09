@@ -12,6 +12,7 @@ import 'package:timezone/timezone.dart' as tz;
 
 import '../models/medicine.dart';
 import 'reminder_plan.dart';
+import 'store.dart';
 
 class SchedulerResult {
   const SchedulerResult({required this.success, this.message, this.exact});
@@ -141,20 +142,28 @@ class ReminderCoordinator {
     return next;
   }
 
-  Future<SchedulerResult> rescheduleAll(List<Medicine> medicines) {
+  Future<SchedulerResult> rescheduleAll(List<Medicine> medicines,
+      {int? followUpMinutes}) {
     // Snapshot before entering the queue; callers may edit mutable medicines.
     final snapshot = medicines
         .map((medicine) => Medicine.fromJson(medicine.toJson()))
         .toList();
     return _serial(() async {
-      final plan = ReminderPlan.build(snapshot, clock());
+      final plan = ReminderPlan.build(snapshot, clock(),
+          followUpMinutes: followUpMinutes);
       if (plan.error != null)
         return SchedulerResult(success: false, message: plan.error);
-      return _apply(plan.reminders, replaceAll: true);
+      final result = await _apply(plan.reminders, replaceAll: true);
+      if (result.success && result.message == null && plan.notice != null) {
+        return SchedulerResult(
+            success: true, message: plan.notice, exact: result.exact);
+      }
+      return result;
     });
   }
 
-  Future<SchedulerResult> cancelDose(Medicine medicine, DateTime dose) {
+  Future<SchedulerResult> cancelDose(Medicine medicine, DateTime dose,
+      {int? followUpMinutes}) {
     final snapshot = Medicine.fromJson(medicine.toJson());
     return _serial(() async {
       // A dose of an earlier rule (before a schedule edit took effect) has a
@@ -162,17 +171,26 @@ class ReminderCoordinator {
       final earlierRule =
           snapshot.revisions.isNotEmpty && dose.isBefore(snapshot.start);
       if (snapshot.scheduleEnd == null && !snapshot.isPrn && !earlierRule) {
-        final plan = ReminderPlan.build([snapshot], clock());
+        final plan = ReminderPlan.build([snapshot], clock(),
+            followUpMinutes: followUpMinutes);
         if (plan.error != null)
           return SchedulerResult(success: false, message: plan.error);
-        final key =
-            ReminderPlan.seriesKey(snapshot.id, ReminderPlan.timeOf(dose));
-        final replacements =
-            plan.reminders.where((reminder) => reminder.key == key).toList();
-        return _apply(replacements, replaceAll: false, removeKeys: {key});
+        // Move this time's series (and its follow-up series) to the next
+        // dose that is not taken.
+        final time = ReminderPlan.timeOf(dose);
+        final keys = {
+          ReminderPlan.seriesKey(snapshot.id, time),
+          ReminderPlan.followUpSeriesKey(snapshot.id, time),
+        };
+        final replacements = plan.reminders
+            .where((reminder) => keys.contains(reminder.key))
+            .toList();
+        return _apply(replacements, replaceAll: false, removeKeys: keys);
       }
+      final doseId = snapshot.doseId(dose);
       return _apply([],
-          replaceAll: false, removeKeys: {'dose:${snapshot.doseId(dose)}'});
+          replaceAll: false,
+          removeKeys: {'dose:$doseId', ReminderPlan.followUpKey(doseId)});
     });
   }
 
@@ -519,13 +537,15 @@ class Scheduler {
           'Notifications are not ready. Restart the app and check Android settings.');
   static Future<SchedulerResult> rescheduleAll(List<Medicine> medicines) async {
     if (!_initialized) return _unavailable;
-    return _coordinator.rescheduleAll(medicines);
+    return _coordinator.rescheduleAll(medicines,
+        followUpMinutes: Store.followUpDelay);
   }
 
   static Future<SchedulerResult> cancelDose(
       Medicine medicine, DateTime dose) async {
     if (!_initialized) return _unavailable;
-    return _coordinator.cancelDose(medicine, dose);
+    return _coordinator.cancelDose(medicine, dose,
+        followUpMinutes: Store.followUpDelay);
   }
 
   static Future<SchedulerResult> testInOneMinute(Medicine? medicine) async {

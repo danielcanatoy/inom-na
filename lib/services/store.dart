@@ -70,6 +70,39 @@ class Store {
     return operation;
   }
 
+  // Follow-up reminders: on by default, 30 minutes (disclosed in Settings).
+  static const followUpChoices = [10, 30, 60];
+  static bool get followUpEnabled {
+    try {
+      return _p.getBool('followup_enabled') ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static int get followUpMinutes {
+    try {
+      final value = _p.getInt('followup_minutes');
+      return followUpChoices.contains(value) ? value! : 30;
+    } catch (_) {
+      return 30;
+    }
+  }
+
+  /// Minutes until a follow-up, or null when follow-ups are turned off.
+  static int? get followUpDelay => followUpEnabled ? followUpMinutes : null;
+
+  static Future<void> setFollowUp(
+      {required bool enabled, required int minutes}) async {
+    if (!followUpChoices.contains(minutes)) {
+      throw const FormatException('Choose 10, 30 or 60 minutes.');
+    }
+    if (!await _p.setBool('followup_enabled', enabled) ||
+        !await _p.setInt('followup_minutes', minutes)) {
+      throw StateError('Follow-up settings could not be saved.');
+    }
+  }
+
   static const _routineKey = 'daily_routine_v1';
 
   /// The saved daily routine, or null if the user has not saved one (or the

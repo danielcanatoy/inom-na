@@ -14,6 +14,10 @@ import '../ui/brand.dart';
 import '../ui/components.dart';
 import '../ui/format.dart';
 import 'confirm_screen.dart';
+import '../ui/routine_suggestion.dart';
+import 'edit_schedule_screen.dart';
+import 'medication_details_screen.dart';
+import 'routine_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -251,6 +255,64 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Saves confirmed schedule edits through the normal serialized save and
+  /// reminder reconciliation. Taken records are merged, never dropped.
+  Future<void> _applyRevised(List<Medicine> revised, String success) async {
+    if (revised.isEmpty) return;
+    final byId = {for (final m in revised) m.id: m};
+    final candidate = [
+      for (final m in _snapshot())
+        if (byId[m.id] case final updated?)
+          (updated..taken = {...updated.taken, ...m.taken}.toList())
+        else
+          m,
+    ];
+    final result = await _commit(candidate);
+    if (result == null) return;
+    _snack(result.success
+        ? result.message ?? success
+        : result.message ?? 'The change could not be completed.');
+  }
+
+  Future<void> _openRoutine() async {
+    if (_saving) return;
+    final result = await Navigator.push<RoutineResult>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => RoutineScreen(medicines: _snapshot())));
+    if (!mounted || result == null) return;
+    setState(() {}); // Refresh routine-dependent prompts.
+    if (result.updated.isEmpty) {
+      _snack('Your daily routine was saved.');
+      return;
+    }
+    await _applyRevised(
+        result.updated,
+        'Your daily routine was saved. Reminder times were updated for '
+        '${result.updated.length} '
+        '${result.updated.length == 1 ? "medication" : "medications"}.');
+  }
+
+  Future<void> _editSchedule(Medicine m) async {
+    if (_saving) return;
+    final revised = await Navigator.push<Medicine>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => EditScheduleScreen(medicine: m.copy())));
+    if (!mounted || revised == null) return;
+    await _applyRevised([revised], 'Schedule updated. Reminders were reset.');
+  }
+
+  Future<void> _openDetails(Medicine m) async {
+    if (_saving) return;
+    final revised = await Navigator.push<Medicine>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => MedicationDetailsScreen(medicine: m.copy())));
+    if (!mounted || revised == null) return;
+    await _applyRevised([revised], 'Schedule updated. Reminders were reset.');
+  }
+
   void _pickSource() {
     showModalBottomSheet(
         context: context,
@@ -299,8 +361,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     return Scaffold(
       appBar: AppBar(
-        title: const IMedsULogo(fontSize: 26),
+        // Scales down on narrow phones so the action icons always fit.
+        title: const FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: IMedsULogo(fontSize: 26)),
         actions: [
+          IconButton(
+              tooltip: 'My Daily Routine',
+              icon: const Icon(Icons.wb_twilight),
+              onPressed: _saving ? null : _openRoutine),
           IconButton(
               tooltip: 'Send a test reminder in 1 minute',
               icon: const Icon(Icons.notifications_active_outlined),
@@ -346,6 +416,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                   },
                             child: const Text('Check Reminders Again')),
                       ),
+              ),
+            if (Store.routine == null && Store.loadError == null)
+              InfoBanner(
+                tone: Tone.info,
+                title: 'My Daily Routine',
+                message: 'Set your usual wake-up, meal and bed times to get '
+                    'reminder suggestions that fit your day.',
+                action: Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                      onPressed: _saving ? null : _openRoutine,
+                      icon: const Icon(Icons.wb_twilight),
+                      label: const Text('Set Up My Daily Routine')),
+                ),
               ),
             if (_meds.isEmpty)
               EmptyState(
@@ -420,61 +504,80 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             'Compare it with your prescription.',
     ];
     return Card(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 4, 12),
-        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Expanded(
-            child:
-                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('${m.name} ${m.dose}'.trim(), style: textTheme.titleMedium),
-              if (m.instructions.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(m.instructions, style: textTheme.bodySmall),
-                ),
-              const SizedBox(height: 6),
-              for (final line in lines)
-                Padding(
-                  padding: const EdgeInsets.only(top: 2),
-                  child: Text(line, style: textTheme.bodyMedium),
-                ),
-            ]),
-          ),
-          IconButton(
-              tooltip: 'Delete ${m.name}',
-              icon: const Icon(Icons.delete_outline),
-              onPressed: _saving
-                  ? null
-                  : () async {
-                      final ok = await showDialog<bool>(
-                          context: context,
-                          builder: (c) => AlertDialog(
-                                  title: Text('Delete ${m.name}?'),
-                                  content: const Text(
-                                      'Its reminders will be cancelled and its '
-                                      'dose history removed. This cannot be undone.'),
-                                  actions: [
-                                    TextButton(
-                                        onPressed: () =>
-                                            Navigator.pop(c, false),
-                                        child: const Text(AppStrings.cancel)),
-                                    FilledButton(
-                                        style: FilledButton.styleFrom(
-                                            backgroundColor: AppColors.error),
-                                        onPressed: () => Navigator.pop(c, true),
-                                        child: const Text(AppStrings.delete)),
-                                  ]));
-                      if (ok == true && mounted && !_saving) {
-                        final candidate = _snapshot()
-                          ..removeWhere((item) => item.id == m.id);
-                        final result = await _commit(candidate);
-                        if (result != null && !result.success) {
-                          _snack(result.message ??
-                              'The change could not be completed.');
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: _saving ? null : () => _openDetails(m),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 4, 12),
+          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${m.name} ${m.dose}'.trim(),
+                        style: textTheme.titleMedium),
+                    const SizedBox(height: 4),
+                    ScheduleBasisBadge(m),
+                    if (m.instructions.isNotEmpty)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(m.instructions, style: textTheme.bodySmall),
+                      ),
+                    const SizedBox(height: 6),
+                    for (final line in lines)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(line, style: textTheme.bodyMedium),
+                      ),
+                    const SizedBox(height: 10),
+                    Wrap(spacing: 8, runSpacing: 8, children: [
+                      OutlinedButton.icon(
+                          onPressed: _saving ? null : () => _editSchedule(m),
+                          icon: const Icon(Icons.edit_calendar_outlined),
+                          label: const Text('Edit Schedule')),
+                      TextButton(
+                          onPressed: _saving ? null : () => _openDetails(m),
+                          child: const Text('Details')),
+                    ]),
+                  ]),
+            ),
+            IconButton(
+                tooltip: 'Delete ${m.name}',
+                icon: const Icon(Icons.delete_outline),
+                onPressed: _saving
+                    ? null
+                    : () async {
+                        final ok = await showDialog<bool>(
+                            context: context,
+                            builder: (c) => AlertDialog(
+                                    title: Text('Delete ${m.name}?'),
+                                    content: const Text(
+                                        'Its reminders will be cancelled and its '
+                                        'dose history removed. This cannot be undone.'),
+                                    actions: [
+                                      TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(c, false),
+                                          child: const Text(AppStrings.cancel)),
+                                      FilledButton(
+                                          style: FilledButton.styleFrom(
+                                              backgroundColor: AppColors.error),
+                                          onPressed: () =>
+                                              Navigator.pop(c, true),
+                                          child: const Text(AppStrings.delete)),
+                                    ]));
+                        if (ok == true && mounted && !_saving) {
+                          final candidate = _snapshot()
+                            ..removeWhere((item) => item.id == m.id);
+                          final result = await _commit(candidate);
+                          if (result != null && !result.success) {
+                            _snack(result.message ??
+                                'The change could not be completed.');
+                          }
                         }
-                      }
-                    }),
-        ]),
+                      }),
+          ]),
+        ),
       ),
     );
   }
@@ -504,7 +607,10 @@ class _ProgressSummary extends StatelessWidget {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: LinearProgressIndicator(
-                  value: taken / doses.length, minHeight: 10),
+                  value: taken / doses.length,
+                  minHeight: 10,
+                  // Visible track on the light-teal card, even at 0.
+                  backgroundColor: AppColors.surface),
             ),
           ),
         ]),

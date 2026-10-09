@@ -1,3 +1,5 @@
+import 'routine.dart';
+
 /// Daily frequency and fixed-hour intervals have different prescription meanings.
 enum ScheduleKind { unknown, daily, interval, explicit, prn }
 
@@ -21,10 +23,13 @@ class Medicine {
     this.end,
     List<String>? reviewNotes,
     this.legacy = false,
+    this.routineLink,
+    List<ScheduleRevision>? revisions,
   })  : times = List<String>.of(times ?? []),
         start = start ?? DateTime.now(),
         taken = (taken ?? []).toSet().toList(),
-        reviewNotes = List<String>.of(reviewNotes ?? []);
+        reviewNotes = List<String>.of(reviewNotes ?? []),
+        revisions = List<ScheduleRevision>.of(revisions ?? []);
 
   String id;
   String name;
@@ -43,6 +48,25 @@ class Medicine {
   DateTime? end; // Exclusive end of the prescribed schedule.
   List<String> reviewNotes;
   bool legacy; // Preserve already-saved legacy course bounds and dose keys.
+
+  /// Set when the reminder times were generated from My Daily Routine; null
+  /// for prescribed, interval or customized times.
+  RoutineLink? routineLink;
+
+  /// Earlier schedule rules, oldest first. Each applies to doses before its
+  /// `until`; the fields above are the current rule from the last `until`.
+  /// Edits never rewrite past doses or taken records.
+  List<ScheduleRevision> revisions;
+
+  /// When the medication course began (before any schedule edits).
+  DateTime get originalStart =>
+      revisions.isEmpty ? start : revisions.first.medicine.start;
+
+  /// When the current schedule rule took effect.
+  DateTime? get currentRuleFrom =>
+      revisions.isEmpty ? null : revisions.last.until;
+
+  Medicine copy() => Medicine.fromJson(toJson());
 
   int get timesPerDay => scheduleKind == ScheduleKind.interval
       ? (intervalHours != null && intervalHours! > 0
@@ -259,6 +283,43 @@ class Medicine {
     int? limit,
   }) {
     if (limit != null && limit <= 0) return [];
+    if (revisions.isEmpty) {
+      return _ruleDoses(horizon: horizon, from: from, limit: limit);
+    }
+    // Earlier rules produce the doses before each revision boundary; the
+    // current rule produces the rest. Segments never overlap.
+    final out = <DateTime>[];
+    DateTime? segmentStart;
+    for (final revision in revisions) {
+      final lower = _later(from, segmentStart);
+      final segmentHorizon =
+          horizon.isBefore(revision.until) ? horizon : revision.until;
+      for (final dose in revision.medicine
+          ._ruleDoses(horizon: segmentHorizon, from: lower)) {
+        if (!dose.isBefore(revision.until)) break;
+        out.add(dose);
+        if (limit != null && out.length >= limit) return out;
+      }
+      segmentStart = revision.until;
+      if (horizon.isBefore(revision.until)) return out;
+    }
+    out.addAll(_ruleDoses(
+        horizon: horizon,
+        from: _later(from, segmentStart),
+        limit: limit == null ? null : limit - out.length));
+    return out;
+  }
+
+  static DateTime? _later(DateTime? a, DateTime? b) =>
+      a == null ? b : (b == null || a.isAfter(b) ? a : b);
+
+  /// Doses of the current rule only.
+  List<DateTime> _ruleDoses({
+    required DateTime horizon,
+    DateTime? from,
+    int? limit,
+  }) {
+    if (limit != null && limit <= 0) return [];
     if (isPrn || scheduleErrors().isNotEmpty) return [];
     var cutoff = legacy ? start.subtract(const Duration(minutes: 30)) : start;
     final startDay = DateTime(start.year, start.month, start.day);
@@ -304,6 +365,14 @@ class Medicine {
   }
 
   int? get totalDoses {
+    if (revisions.isNotEmpty) {
+      // Past rules count their actual doses; the current rule continues to
+      // the unchanged end of the course.
+      if (scheduleErrors().isNotEmpty) return null;
+      final stop = scheduleEnd;
+      if (stop == null && !isPrn) return null;
+      return allDoses(horizon: stop ?? revisions.last.until).length;
+    }
     if (isPrn) return 0;
     if (scheduleErrors().isNotEmpty) return null;
     final stop = scheduleEnd;
@@ -322,6 +391,44 @@ class Medicine {
     final stop = scheduleEnd;
     return stop != null && !DateTime.now().isBefore(stop);
   }
+
+  /// Applies [next]'s schedule rule from [effectiveFrom] onwards. Doses before
+  /// [effectiveFrom] keep their original rule and times, and taken records,
+  /// identity and history are preserved. [next] must start at or after
+  /// [effectiveFrom]. This medicine is not modified.
+  Medicine withScheduleFrom(Medicine next, DateTime effectiveFrom) {
+    final kept = <ScheduleRevision>[];
+    DateTime? segmentStart;
+    var currentRuleApplies = true;
+    for (final revision in revisions) {
+      if (!revision.until.isAfter(effectiveFrom)) {
+        kept.add(revision);
+        segmentStart = revision.until;
+        continue;
+      }
+      // An earlier rule still running at the change point is cut there.
+      if (segmentStart == null || segmentStart.isBefore(effectiveFrom)) {
+        kept.add(ScheduleRevision(until: effectiveFrom, rule: revision.rule));
+      }
+      currentRuleApplies = false;
+      break;
+    }
+    if (currentRuleApplies &&
+        _ruleDoses(horizon: effectiveFrom, from: segmentStart)
+            .any((dose) => dose.isBefore(effectiveFrom))) {
+      kept.add(ScheduleRevision(until: effectiveFrom, rule: ruleJson()));
+    }
+    return Medicine.fromJson(next.toJson())
+      ..id = id
+      ..taken = List<String>.of(taken)
+      ..revisions = kept;
+  }
+
+  /// This medicine's current schedule rule, without history.
+  Map<String, dynamic> ruleJson() => toJson()
+    ..remove('taken')
+    ..remove('revisions')
+    ..remove('routineLink');
 
   bool get allTaken {
     final stop = scheduleEnd;
@@ -370,6 +477,9 @@ class Medicine {
         'end': end?.toIso8601String(),
         'reviewNotes': reviewNotes,
         'legacy': legacy,
+        if (routineLink != null) 'routineLink': routineLink!.toJson(),
+        if (revisions.isNotEmpty)
+          'revisions': revisions.map((r) => r.toJson()).toList(),
       };
 
   factory Medicine.fromJson(Map<String, dynamic> json) {
@@ -410,6 +520,39 @@ class Medicine {
       end: end,
       reviewNotes: (json['reviewNotes'] as List?)?.cast<String>(),
       legacy: legacy,
+      routineLink: json['routineLink'] == null
+          ? null
+          : RoutineLink.fromJson(
+              Map<String, dynamic>.from(json['routineLink'] as Map)),
+      revisions: [
+        for (final raw in (json['revisions'] as List? ?? const []))
+          ScheduleRevision.fromJson(Map<String, dynamic>.from(raw as Map)),
+      ],
     );
+  }
+}
+
+/// An earlier schedule rule that applied to doses before [until].
+class ScheduleRevision {
+  ScheduleRevision({required this.until, required Map<String, dynamic> rule})
+      : rule = Map.unmodifiable(rule);
+  final DateTime until; // Exclusive.
+  final Map<String, dynamic> rule;
+  late final Medicine medicine =
+      Medicine.fromJson(Map<String, dynamic>.from(rule));
+
+  Map<String, dynamic> toJson() =>
+      {'until': until.toIso8601String(), 'rule': rule};
+
+  factory ScheduleRevision.fromJson(Map<String, dynamic> json) {
+    final until = DateTime.tryParse(json['until'] as String? ?? '');
+    final rule = json['rule'];
+    if (until == null || rule is! Map) {
+      throw const FormatException('Invalid schedule revision');
+    }
+    final revision =
+        ScheduleRevision(until: until, rule: Map<String, dynamic>.from(rule));
+    revision.medicine; // Validate eagerly; corrupt history must not load.
+    return revision;
   }
 }

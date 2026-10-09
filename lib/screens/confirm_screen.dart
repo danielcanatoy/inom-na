@@ -7,6 +7,10 @@ import '../ui/app_strings.dart';
 import '../ui/app_theme.dart';
 import '../ui/components.dart';
 import '../ui/format.dart';
+import '../models/routine.dart';
+import '../services/store.dart';
+import '../ui/routine_suggestion.dart';
+import 'routine_screen.dart';
 
 /// Every prescription field and the resulting schedule must be reviewed.
 class ConfirmScreen extends StatefulWidget {
@@ -265,6 +269,24 @@ class _MedEditorState extends State<_MedEditor> {
     return DateTime(day.year, day.month, day.day, time.hour, time.minute);
   }
 
+  Future<void> _setUpRoutine() async {
+    await Navigator.push<RoutineResult>(context,
+        MaterialPageRoute(builder: (_) => const RoutineScreen(medicines: [])));
+    if (mounted) setState(() {});
+  }
+
+  /// Sets the first interval dose to the next wake-up time (a user choice).
+  void _useWakeTime(DailyRoutine routine) {
+    final now = DateTime.now();
+    final wake = routine[RoutineEvent.wake];
+    var at = Medicine.atTime(now, wake);
+    if (at.isBefore(now)) {
+      at = Medicine.atTime(now.add(const Duration(days: 1)), wake);
+    }
+    _change(() => m.start = at);
+    widget.onStartReviewed();
+  }
+
   Future<void> _pickStart() async {
     final picked = await _pickDateTime(m.start);
     if (picked == null || !mounted) return;
@@ -309,6 +331,7 @@ class _MedEditorState extends State<_MedEditor> {
         m.times[index] = value;
       }
       m.times.sort();
+      m.routineLink = null; // Customized times are never overwritten later.
     });
   }
 
@@ -345,6 +368,7 @@ class _MedEditorState extends State<_MedEditor> {
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
     final nameWarning = MedNames.check(m.name).warning;
+    final routine = Store.routine;
     final errors = widget.errors;
     final valid = m.validationErrors().isEmpty;
     final preview = valid
@@ -429,7 +453,10 @@ class _MedEditorState extends State<_MedEditor> {
               (ScheduleKind.explicit, 'Written clock times'),
               (ScheduleKind.prn, 'As needed (PRN, no reminders)'),
             ],
-            onChanged: (kind) => _change(() => m.scheduleKind = kind),
+            onChanged: (kind) => _change(() {
+              m.scheduleKind = kind;
+              m.routineLink = null;
+            }),
           ),
           const SizedBox(height: 12),
           if (m.scheduleKind == ScheduleKind.daily)
@@ -438,8 +465,10 @@ class _MedEditorState extends State<_MedEditor> {
                 initialValue: m.frequencyPerDay?.toString() ?? '',
                 keyboardType: TextInputType.number,
                 decoration: _dec('Times per day'),
-                onChanged: (v) =>
-                    _change(() => m.frequencyPerDay = int.tryParse(v))),
+                onChanged: (v) => _change(() {
+                      m.frequencyPerDay = int.tryParse(v);
+                      m.routineLink = null;
+                    })),
           if (m.scheduleKind == ScheduleKind.interval) ...[
             TextFormField(
                 key: const ValueKey('interval-hours'),
@@ -461,21 +490,36 @@ class _MedEditorState extends State<_MedEditor> {
               const InfoBanner(
                   tone: Tone.info,
                   message: 'Choose the first dose date and time below.'),
+            if (routine != null)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => _useWakeTime(routine),
+                  icon: const Icon(Icons.wb_twilight),
+                  label: Text('Use my wake-up time for the first dose '
+                      '(${Fmt.clock(routine[RoutineEvent.wake])})'),
+                ),
+              ),
           ],
           if (m.scheduleKind == ScheduleKind.daily ||
               m.scheduleKind == ScheduleKind.explicit ||
               m.scheduleKind == ScheduleKind.interval) ...[
             const SizedBox(height: 8),
+            ScheduleBasisBadge(m),
+            const SizedBox(height: 6),
             Text(
-                m.scheduleKind == ScheduleKind.daily
-                    ? 'Suggested times for this daily frequency. Adjust them '
-                        'to match your prescription before verifying.'
-                    : m.scheduleKind == ScheduleKind.interval
-                        ? 'Written times for this interval. Correct any '
-                            'misread time; the first dose and interval must '
-                            'match them.'
-                        : 'Times read or entered. Compare them with your '
-                            'prescription before verifying.',
+                m.scheduleKind == ScheduleKind.daily && m.routineLink != null
+                    ? 'Times based on My Daily Routine. They are reminder '
+                        'suggestions, not part of your prescription.'
+                    : m.scheduleKind == ScheduleKind.daily
+                        ? 'Suggested times for this daily frequency. Adjust them '
+                            'to match your prescription before verifying.'
+                        : m.scheduleKind == ScheduleKind.interval
+                            ? 'Written times for this interval. Correct any '
+                                'misread time; the first dose and interval must '
+                                'match them.'
+                            : 'Times read or entered. Compare them with your '
+                                'prescription before verifying.',
                 style: textTheme.bodySmall),
             const SizedBox(height: 6),
             Wrap(spacing: 8, runSpacing: 8, children: [
@@ -485,12 +529,26 @@ class _MedEditorState extends State<_MedEditor> {
                     tooltip: 'Change this time',
                     deleteButtonTooltipMessage: 'Remove this time',
                     onPressed: () => _editTime(i),
-                    onDeleted: () => _change(() => m.times.removeAt(i))),
+                    onDeleted: () => _change(() {
+                          m.times.removeAt(i);
+                          m.routineLink = null;
+                        })),
               ActionChip(
                   avatar: const Icon(Icons.add, size: 18),
                   label: const Text('Add Time'),
                   onPressed: () => _editTime(null)),
             ]),
+            if (m.scheduleKind == ScheduleKind.daily)
+              RoutineSuggestionPanel(
+                key: ValueKey('routine-${m.frequencyPerDay}'),
+                medicine: m,
+                routine: routine,
+                onApply: (times, link) => _change(() {
+                  m.times = [...times];
+                  m.routineLink = link;
+                }),
+                onSetUpRoutine: routine == null ? _setUpRoutine : null,
+              ),
           ],
           const SizedBox(height: 12),
           SizedBox(

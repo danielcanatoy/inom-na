@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/medicine.dart';
+import '../models/routine.dart';
 
 /// Medicine records are stored on the phone; extraction may use the LAN laptop.
 class Store {
@@ -67,6 +68,30 @@ class Store {
     _writes =
         operation.then<void>((_) {}, onError: (Object _, StackTrace __) {});
     return operation;
+  }
+
+  static const _routineKey = 'daily_routine_v1';
+
+  /// The saved daily routine, or null if the user has not saved one (or the
+  /// stored value is unreadable). Picker defaults are never returned here.
+  static DailyRoutine? get routine {
+    try {
+      final raw = _p.getString(_routineKey);
+      if (raw == null) return null;
+      final routine = DailyRoutine.fromJson(
+          Map<String, dynamic>.from(jsonDecode(raw) as Map));
+      return routine.validationErrors().isEmpty ? routine : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> saveRoutine(DailyRoutine routine) async {
+    final errors = routine.validationErrors();
+    if (errors.isNotEmpty) throw FormatException(errors.first);
+    if (!await _p.setString(_routineKey, jsonEncode(routine.toJson()))) {
+      throw StateError('Your daily routine could not be saved.');
+    }
   }
 
   // Ollama on the laptop (phone and laptop must share the same Wi-Fi/hotspot)

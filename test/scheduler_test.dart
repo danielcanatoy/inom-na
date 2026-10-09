@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:inom_na/models/medicine.dart';
 import 'package:inom_na/services/reminder_plan.dart';
+import 'package:inom_na/services/schedule_edit.dart';
 import 'package:inom_na/services/scheduler.dart';
 import 'package:timezone/data/latest_all.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
@@ -393,5 +394,111 @@ void main() {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, null);
     }
+  });
+
+  group('Phase 3 schedule edits', () {
+    final day2 = DateTime(2030, 1, 2);
+    Medicine edit(Medicine saved, List<String> times) => saved.withScheduleFrom(
+        ScheduleEdit.draftOf(saved)
+          ..times = times
+          ..frequencyPerDay = times.length
+          ..start = day2,
+        day2);
+    int idOf(String key) => backend.reminders.entries
+        .singleWhere((entry) => entry.value.key == key)
+        .key;
+
+    test('an edit replaces only affected reminders; others stay untouched',
+        () async {
+      final edited =
+          _medicine('a', maintenance: true, times: ['08:00', '20:00']);
+      final other = _medicine('b', maintenance: true, times: ['09:00']);
+      expect((await scheduler.rescheduleAll([edited, other])).success, isTrue);
+      final old8 = idOf('daily:a:08:00');
+      final old20 = idOf('daily:a:20:00');
+      final otherId = idOf('daily:b:09:00');
+      final otherPayload = backend.entries[otherId]!.payload;
+      final callsBefore = backend.calls;
+
+      final revised = edit(edited, ['09:30', '21:00']);
+      expect((await scheduler.rescheduleAll([revised, other])).success, isTrue);
+      expect(backend.canceled, containsAll([old8, old20]));
+      final keys = backend.reminders.values.map((r) => r.key).toSet();
+      // Today's remaining doses keep their old times as one-off reminders.
+      expect(
+          keys,
+          containsAll([
+            'dose:a|2030-01-01 08:00',
+            'dose:a|2030-01-01 20:00',
+            'daily:a:09:30',
+            'daily:a:21:00',
+            'daily:b:09:00',
+          ]));
+      expect(keys, isNot(contains('daily:a:08:00')));
+      expect(keys, isNot(contains('daily:a:20:00')));
+      expect(backend.reminders[idOf('daily:a:09:30')]!.when,
+          DateTime(2030, 1, 2, 9, 30));
+      // The unaffected medicine was neither cancelled nor re-registered.
+      expect(backend.canceled, isNot(contains(otherId)));
+      expect(backend.entries[otherId]!.payload, otherPayload);
+      expect(backend.calls - callsBefore, 4);
+    });
+
+    test('a failed edit registration keeps the previous reminders', () async {
+      final med = _medicine('a', maintenance: true, times: ['08:00']);
+      await scheduler.rescheduleAll([med]);
+      final before =
+          backend.entries.map((id, entry) => MapEntry(id, entry.payload));
+      backend.failCall = backend.calls + 2;
+      final result = await scheduler.rescheduleAll([
+        edit(med, ['10:00'])
+      ]);
+      expect(result.success, isFalse);
+      expect(result.message, isNotNull);
+      expect(backend.entries.map((id, entry) => MapEntry(id, entry.payload)),
+          before);
+    });
+
+    test('concurrent edit saves serialize; the last confirmed edit wins',
+        () async {
+      final med = _medicine('a', maintenance: true, times: ['08:00']);
+      final gate = Completer<void>();
+      backend.block = gate;
+      final first = scheduler.rescheduleAll([
+        edit(med, ['09:00'])
+      ]);
+      final second = scheduler.rescheduleAll([
+        edit(med, ['11:00'])
+      ]);
+      await Future<void>.delayed(Duration.zero);
+      gate.complete();
+      expect((await first).success, isTrue);
+      expect((await second).success, isTrue);
+      expect(backend.maxActive, 1);
+      final series = backend.reminders.values
+          .where((r) => r.key.startsWith('daily:a:'))
+          .map((r) => r.key)
+          .toList();
+      expect(series, ['daily:a:11:00']);
+    });
+
+    test('taking an old-time dose during a change cancels only that reminder',
+        () async {
+      final med = _medicine('a', maintenance: true, times: ['08:00', '20:00']);
+      final revised = edit(med, ['09:00', '21:00']);
+      await scheduler.rescheduleAll([revised]);
+      final oneOff = idOf('dose:a|2030-01-01 20:00');
+      final seriesIds = backend.reminders.entries
+          .where((entry) => entry.value.repeatDaily)
+          .map((entry) => entry.key)
+          .toSet();
+      expect(seriesIds, hasLength(2));
+      final dose = DateTime(2030, 1, 1, 20);
+      revised.markTaken(dose);
+      expect((await scheduler.cancelDose(revised, dose)).success, isTrue);
+      expect(backend.canceled, contains(oneOff));
+      expect(backend.canceled.toSet().intersection(seriesIds), isEmpty);
+      expect(backend.entries.keys, containsAll(seriesIds));
+    });
   });
 }

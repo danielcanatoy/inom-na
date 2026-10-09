@@ -120,6 +120,15 @@ class ReminderPlan {
         final byTime = <String, DateTime>{};
         for (final dose in medicine.allDoses(horizon: horizon, from: now)) {
           if (!dose.isAfter(now)) continue;
+          // Remaining doses of an earlier rule (before a schedule edit takes
+          // effect) are one-off reminders; only the current rule repeats.
+          if (medicine.revisions.isNotEmpty && dose.isBefore(medicine.start)) {
+            if (!medicine.isTaken(dose)) {
+              result.add(_dose(medicine, dose, body));
+            }
+            if (result.length > maxPending) return _capacityFailure();
+            continue;
+          }
           final time = _time(dose);
           var next = dose;
           while (medicine.isTaken(next)) {
@@ -146,7 +155,7 @@ class ReminderPlan {
         final perDay = medicine.timesPerDay * medicine.qtyPerIntake;
         if (perDay.isFinite && perDay > 0 && (medicine.stock ?? 0) > 0) {
           final covered = (medicine.stock! / perDay).floor();
-          final start = medicine.start;
+          final start = medicine.originalStart;
           final alert =
               DateTime(start.year, start.month, start.day + covered - 3, 9);
           if (alert.isAfter(now)) {

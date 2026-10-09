@@ -52,6 +52,19 @@ class FallbackParser {
   static final _unclearInterval =
       RegExp(r'\bq\s*(?:[a-z?]+\s*h|\d+[.,]\d+\s*h)\b', caseSensitive: false);
 
+  static final _odAbbreviation =
+      RegExp(r'\bo\.?d\.?(?![a-z])', caseSensitive: false);
+
+  /// Timing words in the written directions. Used only to pre-select a
+  /// routine suggestion that the user must review before it is applied.
+  static ({bool bedtime, bool beforeMeals, bool afterMeals}) timingHints(
+          String directions) =>
+      (
+        bedtime: _bed.hasMatch(directions),
+        beforeMeals: _ac.hasMatch(directions),
+        afterMeals: _pc.hasMatch(directions),
+      );
+
   static List<Medicine> parse(String text) {
     final drafts = <_Draft>[];
     _Draft? current;
@@ -140,6 +153,11 @@ class FallbackParser {
       frequency = frequencies.single;
       times = Medicine.defaultTimes(frequency, bedtime: draft.bedtime);
     }
+    if (draft.odAbbreviation) {
+      notes
+          .add('"OD" usually means once a day, but on eye prescriptions it can '
+              'mean the right eye. Check your prescription.');
+    }
     if (draft.duplicateTime)
       notes.add(
           'The same clock time is written more than once. Check the schedule.');
@@ -210,6 +228,7 @@ class FallbackParser {
       draft.frequencies.add(1);
     }
     if (_prn.hasMatch(line)) draft.prn = true;
+    if (_odAbbreviation.hasMatch(line)) draft.odAbbreviation = true;
     if (_maint.hasMatch(line)) draft.maintenance = true;
     for (final match in _days.allMatches(line)) {
       final count = int.parse(match.group(1)!);
@@ -276,6 +295,7 @@ class _Draft {
   final Set<double> quantities = {};
   int? stock;
   bool bedtime = false;
+  bool odAbbreviation = false;
   bool prn = false;
   bool maintenance = false;
   bool beforeMeal = false;

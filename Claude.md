@@ -115,6 +115,13 @@ Camera / gallery / typed prescription
 - Implemented and code-verified; awaiting the developer's real-device review and approval. See the Phase 2 report in the session for test/build numbers. Do not start Phase 3 without approval.
 - Confirm-screen dropdown overflow fixed (`isExpanded`, non-dense, wrapping) with layout tests at 320/393 dp and text scale up to 2.0.
 
+### Phase 3 — My Daily Routine and schedule editing (October 10, 2026, branch `phase3-routine-scheduling`)
+
+- Implemented and code-verified; awaiting real-device review and approval. Do not start Phase 4 without approval.
+- Key files: `lib/models/routine.dart` (routine + `RoutineLink`), `lib/services/routine_schedule.dart` (suggestions, proposals), `lib/services/schedule_edit.dart` (effective date, validation, course-count preservation), `lib/screens/routine_screen.dart`, `edit_schedule_screen.dart`, `medication_details_screen.dart`, `lib/ui/routine_suggestion.dart`.
+- Schedule history: `Medicine.revisions` (backward-compatible optional JSON field). Earlier rules generate doses before each revision's `until`; never rewrite taken keys or past dose times. Clock-time edits apply from midnight (today only if no dose today has passed/been taken); interval edits apply from the edit time and require a full interval after the last earlier dose. Finite courses keep the same remaining dose count.
+- Routine storage key: `daily_routine_v1`. Picker defaults are never treated as a saved routine.
+
 ### Remaining Phase 1/device risks
 
 - Real HyperOS reminder delivery while locked/backgrounded, after app termination and after reboot.

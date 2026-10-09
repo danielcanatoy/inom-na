@@ -157,7 +157,11 @@ class ReminderCoordinator {
   Future<SchedulerResult> cancelDose(Medicine medicine, DateTime dose) {
     final snapshot = Medicine.fromJson(medicine.toJson());
     return _serial(() async {
-      if (snapshot.scheduleEnd == null && !snapshot.isPrn) {
+      // A dose of an earlier rule (before a schedule edit took effect) has a
+      // one-off reminder, not a repeating series.
+      final earlierRule =
+          snapshot.revisions.isNotEmpty && dose.isBefore(snapshot.start);
+      if (snapshot.scheduleEnd == null && !snapshot.isPrn && !earlierRule) {
         final plan = ReminderPlan.build([snapshot], clock());
         if (plan.error != null)
           return SchedulerResult(success: false, message: plan.error);

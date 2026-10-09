@@ -1,4 +1,4 @@
-﻿import '../models/medicine.dart';
+import '../models/medicine.dart';
 import 'med_names.dart';
 
 /// Conservative phone-only parsing. Unknown directions remain unresolved.
@@ -13,23 +13,43 @@ class FallbackParser {
   );
   static final _daily = <int, RegExp>{
     4: RegExp(r'\b(?:q\.?i\.?d\.?|4x|4\s*times)\b', caseSensitive: false),
-    3: RegExp(r'\b(?:t\.?i\.?d\.?|3x|thrice|3\s*times)\b', caseSensitive: false),
+    3: RegExp(r'\b(?:t\.?i\.?d\.?|3x|thrice|3\s*times)\b',
+        caseSensitive: false),
     2: RegExp(r'\b(?:b\.?i\.?d\.?|2x|twice|2\s*times)\b', caseSensitive: false),
-    1: RegExp(r'\b(?:o\.?d\.?|q\.?d\.?|once|1x|daily|isang\s*beses)\b', caseSensitive: false),
+    1: RegExp(r'\b(?:o\.?d\.?|q\.?d\.?|once|1x|daily|isang\s*beses)\b',
+        caseSensitive: false),
   };
-  static final _bed = RegExp(r'\b(hs|bedtime|at\s*night|bago\s*matulog)\b', caseSensitive: false);
-  static final _prn = RegExp(r'\b(prn|as\s*needed|kung\s*kailangan|kapag\s*kailangan)\b', caseSensitive: false);
-  static final _days = RegExp(r'(?:x|for|sa\s*loob\s*ng)?\s*(\d{1,3})\s*(days?|araw|weeks?|wks?|linggo)\b', caseSensitive: false);
+  static final _bed = RegExp(r'\b(hs|bedtime|at\s*night|bago\s*matulog)\b',
+      caseSensitive: false);
+  static final _prn = RegExp(
+      r'\b(prn|as\s*needed|kung\s*kailangan|kapag\s*kailangan)\b',
+      caseSensitive: false);
+  static final _days = RegExp(
+      r'(?:x|for|sa\s*loob\s*ng)?\s*(\d{1,3})\s*(days?|araw|weeks?|wks?|linggo)\b',
+      caseSensitive: false);
   // "Continue" alone does not establish an indefinite prescription.
-  static final _maint = RegExp(r'\b(maintenance|indefinitely|tuloy.tuloy)\b', caseSensitive: false);
-  static final _stock = RegExp(r'(?:#|qty\.?:?|no\.)\s*(\d{1,4})\b', caseSensitive: false);
-  static final _qty = RegExp(r'(1/2|½|\d+(?:\.\d+)?)\s*(tabs?|tablets?|caps?|capsules?|tsp|ml|puffs?|drops?)\b', caseSensitive: false);
-  static final _ac = RegExp(r'\b(ac|before\s*meals?|bago\s*kumain)\b', caseSensitive: false);
-  static final _pc = RegExp(r'\b(pc|after\s*meals?|pagkatapos\s*kumain|with\s*food)\b', caseSensitive: false);
-  static final _notName = RegExp(r'^(sig|take|inumin|rx|qty|no)\b', caseSensitive: false);
-  static final _clock = RegExp(r'\b(\d{1,2}):(\d{2})\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b', caseSensitive: false);
-  static final _complex = RegExp(r'\b(alternate|every\s+other|weekly|monthly|taper|except|skip|then|every\s+(morning|evening)|tuwing\s+makalawa)\b', caseSensitive: false);
-  static final _unclearInterval = RegExp(r'\bq\s*(?:[a-z?]+\s*h|\d+[.,]\d+\s*h)\b', caseSensitive: false);
+  static final _maint = RegExp(r'\b(maintenance|indefinitely|tuloy.tuloy)\b',
+      caseSensitive: false);
+  static final _stock =
+      RegExp(r'(?:#|qty\.?:?|no\.)\s*(\d{1,4})\b', caseSensitive: false);
+  static final _qty = RegExp(
+      r'(1/2|½|\d+(?:\.\d+)?)\s*(tabs?|tablets?|caps?|capsules?|tsp|ml|puffs?|drops?)\b',
+      caseSensitive: false);
+  static final _ac =
+      RegExp(r'\b(ac|before\s*meals?|bago\s*kumain)\b', caseSensitive: false);
+  static final _pc = RegExp(
+      r'\b(pc|after\s*meals?|pagkatapos\s*kumain|with\s*food)\b',
+      caseSensitive: false);
+  static final _notName =
+      RegExp(r'^(sig|take|inumin|rx|qty|no)\b', caseSensitive: false);
+  static final _clock = RegExp(
+      r'\b(\d{1,2}):(\d{2})\s*(am|pm)?\b|\b(\d{1,2})\s*(am|pm)\b',
+      caseSensitive: false);
+  static final _complex = RegExp(
+      r'\b(alternate|every\s+other|weekly|monthly|taper|except|skip|then|every\s+(morning|evening)|tuwing\s+makalawa)\b',
+      caseSensitive: false);
+  static final _unclearInterval =
+      RegExp(r'\bq\s*(?:[a-z?]+\s*h|\d+[.,]\d+\s*h)\b', caseSensitive: false);
 
   static List<Medicine> parse(String text) {
     final drafts = <_Draft>[];
@@ -38,13 +58,16 @@ class FallbackParser {
       final line = raw.trim();
       if (line.isEmpty) continue;
       final match = _medLine.firstMatch(line);
-      final name = match == null ? _bareName(line) : _cleanName(match.group(1)!);
+      final name =
+          match == null ? _bareName(line) : _cleanName(match.group(1)!);
       if (name != null && name.length >= 3 && !_notName.hasMatch(name)) {
         final dose = match?.group(2)?.replaceAll(' ', '') ?? '';
-        final negativeDose = match != null && RegExp(r'-\s*\d').hasMatch(line.substring(0, match.end));
+        final negativeDose = match != null &&
+            RegExp(r'-\s*\d').hasMatch(line.substring(0, match.end));
         current = _Draft(name, negativeDose ? '-$dose' : dose);
         drafts.add(current);
-        final directions = match == null ? '' : line.substring(match.end).trim();
+        final directions =
+            match == null ? '' : line.substring(match.end).trim();
         if (directions.isNotEmpty) _apply(current, directions);
       } else if (current != null) {
         _apply(current, line);
@@ -61,30 +84,46 @@ class FallbackParser {
     int? frequency;
     int? interval;
     var times = [...draft.times];
-    final conflict = intervals.length > 1 || frequencies.length > 1 ||
-        (intervals.length == 1 && frequencies.isNotEmpty &&
-            (24 % intervals.first != 0 || frequencies.first != 24 ~/ intervals.first));
+    final conflict = intervals.length > 1 ||
+        frequencies.length > 1 ||
+        (intervals.length == 1 &&
+            frequencies.isNotEmpty &&
+            (24 % intervals.first != 0 ||
+                frequencies.first != 24 ~/ intervals.first));
     if (conflict) {
-      notes.add('Magkasalungat ang nakasulat na dalas. Itama gamit ang reseta o pharmacist.');
+      notes.add(
+          'Magkasalungat ang nakasulat na dalas. Itama gamit ang reseta o pharmacist.');
     } else if (draft.prn) {
       kind = ScheduleKind.prn;
       interval = intervals.isEmpty ? null : intervals.single;
-      if (interval != null) notes.add('PRN: panatilihin ang nakasulat na pagitan na $interval oras; walang awtomatikong paalala.');
+      if (interval != null)
+        notes.add(
+            'PRN: panatilihin ang nakasulat na pagitan na $interval oras; walang awtomatikong paalala.');
     } else if (intervals.isNotEmpty) {
       kind = ScheduleKind.interval;
       interval = intervals.single;
-      if (times.isNotEmpty) notes.add('May nakasulat na oras. Itakda ang unang inom ayon dito bago i-save.');
+      if (times.isNotEmpty)
+        notes.add(
+            'May nakasulat na oras. Itakda ang unang inom ayon dito bago i-save.');
       if (times.length > 1) {
         final sorted = [...times]..sort();
-        final minutes = [for (final time in sorted)
-          int.parse(time.split(':')[0]) * 60 + int.parse(time.split(':')[1])];
-        final consistent = 24 % interval == 0 && minutes.length == 24 ~/ interval &&
-            List.generate(minutes.length, (index) =>
-                (minutes[(index + 1) % minutes.length] - minutes[index] + 1440) % 1440)
-                .every((gap) => gap == interval! * 60);
+        final minutes = [
+          for (final time in sorted)
+            int.parse(time.split(':')[0]) * 60 + int.parse(time.split(':')[1])
+        ];
+        final consistent = 24 % interval == 0 &&
+            minutes.length == 24 ~/ interval &&
+            List.generate(
+                minutes.length,
+                (index) =>
+                    (minutes[(index + 1) % minutes.length] -
+                        minutes[index] +
+                        1440) %
+                    1440).every((gap) => gap == interval! * 60);
         if (!consistent) {
           kind = ScheduleKind.unknown;
-          notes.add('Hindi tugma ang nakasulat na mga oras sa pagitan ng oras.');
+          notes
+              .add('Hindi tugma ang nakasulat na mga oras sa pagitan ng oras.');
         }
       }
     } else if (times.isNotEmpty) {
@@ -99,37 +138,48 @@ class FallbackParser {
       frequency = frequencies.single;
       times = Medicine.defaultTimes(frequency, bedtime: draft.bedtime);
     }
-    if (draft.duplicateTime) notes.add('May magkaparehong nakasulat na oras; suriin ang iskedyul.');
+    if (draft.duplicateTime)
+      notes.add('May magkaparehong nakasulat na oras; suriin ang iskedyul.');
     if (draft.invalidTime) {
       kind = ScheduleKind.unknown;
       notes.add('May hindi wastong nakasulat na oras.');
     }
     if (draft.invalidInterval || draft.complexTiming) {
       kind = ScheduleKind.unknown;
-      notes.add('Hindi malinaw o hindi suportado ang lahat ng direksyon sa oras. Itama ang iskedyul at suriin ang orihinal na direksyon.');
+      notes.add(
+          'Hindi malinaw o hindi suportado ang lahat ng direksyon sa oras. Itama ang iskedyul at suriin ang orihinal na direksyon.');
     }
-    if (draft.quantities.length > 1 || draft.invalidQuantity) notes.add('Magkasalungat o hindi wastong dami sa bawat inom.');
+    if (draft.quantities.length > 1 || draft.invalidQuantity)
+      notes.add('Magkasalungat o hindi wastong dami sa bawat inom.');
     if (draft.beforeMeal || draft.afterMeal) {
-      notes.add('Suriin kung ang napiling oras ay ${draft.beforeMeal ? 'bago' : 'pagkatapos'} kumain. Hindi awtomatikong inaayos ang oras ng pagkain.');
+      notes.add(
+          'Suriin kung ang napiling oras ay ${draft.beforeMeal ? 'bago' : 'pagkatapos'} kumain. Hindi awtomatikong inaayos ang oras ng pagkain.');
     }
     if (draft.beforeMeal && draft.afterMeal) {
       kind = ScheduleKind.unknown;
       notes.add('Magkasalungat ang bago at pagkatapos kumain.');
     }
-    final durationConflict = (draft.maintenance && draft.durations.isNotEmpty) || draft.durations.length > 1;
+    final durationConflict =
+        (draft.maintenance && draft.durations.isNotEmpty) ||
+            draft.durations.length > 1;
     if (durationConflict) notes.add('Magkasalungat ang haba ng gamutan.');
-    final days = !durationConflict && draft.durations.length == 1 ? draft.durations.single : null;
+    final days = !durationConflict && draft.durations.length == 1
+        ? draft.durations.single
+        : null;
     return Medicine(
       id: '${Medicine.newId()}$index',
       name: draft.name,
       dose: draft.dose,
-      qtyPerIntake: !draft.invalidQuantity && draft.quantities.length == 1 ? draft.quantities.single : 0,
+      qtyPerIntake: !draft.invalidQuantity && draft.quantities.length == 1
+          ? draft.quantities.single
+          : 0,
       scheduleKind: kind,
       frequencyPerDay: frequency,
       intervalHours: interval,
       times: times,
       days: days,
-      durationConfirmed: !durationConflict && (days != null || draft.maintenance),
+      durationConfirmed:
+          !durationConflict && (days != null || draft.maintenance),
       instructions: draft.directions.join('\n'),
       stock: draft.stock,
       reviewNotes: notes,
@@ -158,13 +208,15 @@ class FallbackParser {
     for (final match in _days.allMatches(line)) {
       final count = int.parse(match.group(1)!);
       final unit = match.group(2)!.toLowerCase();
-      draft.durations.add((unit.startsWith('w') || unit == 'linggo') ? count * 7 : count);
+      draft.durations
+          .add((unit.startsWith('w') || unit == 'linggo') ? count * 7 : count);
     }
     final stock = _stock.firstMatch(line);
     if (stock != null) draft.stock ??= int.parse(stock.group(1)!);
     for (final quantity in _qty.allMatches(line)) {
       final value = quantity.group(1)!;
-      final parsed = value == '1/2' || value == '½' ? 0.5 : double.tryParse(value);
+      final parsed =
+          value == '1/2' || value == '½' ? 0.5 : double.tryParse(value);
       if (parsed != null) draft.quantities.add(parsed);
       if (RegExp(r'-\s*$').hasMatch(line.substring(0, quantity.start))) {
         draft.invalidQuantity = true;
@@ -174,12 +226,14 @@ class FallbackParser {
       var hour = int.parse(match.group(1) ?? match.group(4)!);
       final minute = int.parse(match.group(2) ?? '0');
       final meridiem = (match.group(3) ?? match.group(5))?.toLowerCase();
-      if (minute > 59 || (meridiem == null ? hour > 23 : hour < 1 || hour > 12)) {
+      if (minute > 59 ||
+          (meridiem == null ? hour > 23 : hour < 1 || hour > 12)) {
         draft.invalidTime = true;
         continue;
       }
       if (meridiem != null) hour = hour % 12 + (meridiem == 'pm' ? 12 : 0);
-      final time = '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
+      final time =
+          '${hour.toString().padLeft(2, '0')}:${minute.toString().padLeft(2, '0')}';
       if (draft.times.contains(time)) draft.duplicateTime = true;
       draft.times.add(time);
     }
@@ -199,7 +253,8 @@ class FallbackParser {
   }
 
   static String _cleanName(String value) => value
-      .replaceAll(RegExp(r'^\s*(\d+[\.\)]|rx:?|r/)\s*', caseSensitive: false), '')
+      .replaceAll(
+          RegExp(r'^\s*(\d+[\.\)]|rx:?|r/)\s*', caseSensitive: false), '')
       .trim();
 }
 

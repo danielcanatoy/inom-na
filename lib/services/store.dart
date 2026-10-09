@@ -32,7 +32,8 @@ class Store {
       loadError = null;
       return medicines;
     } catch (_) {
-      loadError = 'Hindi mabasa ang naka-save na gamot. Napanatili ang orihinal na data; '
+      loadError =
+          'Hindi mabasa ang naka-save na gamot. Napanatili ang orihinal na data; '
           'hindi muna ito papalitan.';
       return [];
     }
@@ -49,7 +50,7 @@ class Store {
       final previous = _p.getString('meds');
       // Also protect callers that did not load records before their first write.
       if (previous != null) {
-        meds();
+        Store.meds();
         if (loadError != null) {
           throw StateError('Hindi ligtas palitan ang naka-save na gamot.');
         }
@@ -63,14 +64,17 @@ class Store {
         throw StateError('Hindi na-save ang mga gamot.');
       }
     });
-    _writes = operation.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    _writes =
+        operation.then<void>((_) {}, onError: (Object _, StackTrace __) {});
     return operation;
   }
 
   // Ollama sa laptop (pareho dapat ang WiFi/hotspot ng phone at laptop)
-  static String get ollamaUrl => _p.getString('ollamaUrl') ?? 'http://192.168.1.81:11434';
+  static String get ollamaUrl =>
+      _p.getString('ollamaUrl') ?? 'http://192.168.1.81:11434';
   static String get ollamaModel => _p.getString('ollamaModel') ?? 'qwen2.5:3b';
-  static String get visionModel => _p.getString('visionModel') ?? 'qwen2.5vl:3b';
+  static String get visionModel =>
+      _p.getString('visionModel') ?? 'qwen2.5vl:3b';
 
   /// Accept only local IP endpoints. Public hosts, credentials, and URL queries
   /// are rejected before any prescription is transmitted.
@@ -83,13 +87,15 @@ class Store {
         uri.hasFragment ||
         (uri.path.isNotEmpty && uri.path != '/') ||
         !isLocalHost(uri.host)) {
-      throw const FormatException('Gumamit ng lokal na IP ng laptop at port ng Ollama.');
+      throw const FormatException(
+          'Gumamit ng lokal na IP ng laptop at port ng Ollama.');
     }
     return uri.replace(path: '');
   }
 
   static bool isLocalHost(String host) {
-    final normalized = host.toLowerCase().replaceAll('[', '').replaceAll(']', '');
+    final normalized =
+        host.toLowerCase().replaceAll('[', '').replaceAll(']', '');
     if (normalized == 'localhost' || normalized == '::1') return true;
     final address = InternetAddress.tryParse(normalized);
     if (address == null) return false;
@@ -108,8 +114,9 @@ class Store {
   static Future<void> setOllama(String url, String model, String vision) async {
     final endpoint = localOllamaUri(url);
     if (model.trim().isEmpty ||
-        [model, vision].any((m) => RegExp(r'(^|[:/\-])cloud($|[:/\-])',
-            caseSensitive: false).hasMatch(m.trim()))) {
+        [model, vision].any((m) =>
+            RegExp(r'(^|[:/\-])cloud($|[:/\-])', caseSensitive: false)
+                .hasMatch(m.trim()))) {
       throw const FormatException('Pumili ng lokal na text/vision model.');
     }
     if (!await _p.setString('ollamaUrl', endpoint.toString()) ||

@@ -14,7 +14,8 @@ class ParseResult {
   final List<Medicine> meds;
   final String source; // tingnan ang RxParser.srcVision / srcText / srcOffline
   final String? note;
-  final Map<String, String> warnings; // Medicine.id -> babala (kailangang suriin ng user)
+  final Map<String, String>
+      warnings; // Medicine.id -> babala (kailangang suriin ng user)
 }
 
 /// Pagkakasunod: (1) Ollama vision (larawan + OCR text), (2) Ollama text (OCR text),
@@ -68,7 +69,8 @@ How to read it:
     String? note;
     final models = await _models();
     if (models == null) {
-      note = 'Hindi maabot ang Ollama sa laptop, kaya offline parser ang ginamit.';
+      note =
+          'Hindi maabot ang Ollama sa laptop, kaya offline parser ang ginamit.';
     } else {
       // 1. Vision: nakikita ng model ang mismong larawan (pinakamaganda sa sulat-kamay)
       if (imagePath != null) {
@@ -93,7 +95,8 @@ How to read it:
         try {
           final meds = await _ollama(Store.ollamaModel, text);
           if (meds.isNotEmpty) return _done(meds, srcText, note, text);
-          note = 'Walang nakuhang gamot ang Local AI, kaya offline parser ang ginamit.';
+          note =
+              'Walang nakuhang gamot ang Local AI, kaya offline parser ang ginamit.';
         } catch (_) {
           note = 'Nag-error ang Local AI, kaya offline parser ang ginamit.';
         }
@@ -114,26 +117,36 @@ How to read it:
   static ParseResult _done(List<Medicine> meds, String source,
       [String? note, String? ocrText]) {
     final warnings = <String, String>{};
-    final writtenMeds = ocrText == null ? <Medicine>[] : FallbackParser.parse(ocrText);
+    final writtenMeds =
+        ocrText == null ? <Medicine>[] : FallbackParser.parse(ocrText);
     for (final m in meds) {
       final c = MedNames.check(m.name);
       m.name = c.name;
       for (final written in writtenMeds) {
-        if (MedNames.check(written.name).name.toLowerCase() != m.name.toLowerCase()) continue;
+        if (MedNames.check(written.name).name.toLowerCase() !=
+            m.name.toLowerCase()) continue;
         if (m.instructions.isEmpty) m.instructions = written.instructions;
-        if (source != srcOffline && written.scheduleKind == ScheduleKind.interval &&
-            (m.scheduleKind != ScheduleKind.interval || m.intervalHours != written.intervalHours)) {
+        if (source != srcOffline &&
+            written.scheduleKind == ScheduleKind.interval &&
+            (m.scheduleKind != ScheduleKind.interval ||
+                m.intervalHours != written.intervalHours)) {
           m.scheduleKind = ScheduleKind.unknown;
-          m.reviewNotes.add('May nakasulat na pagitan ng oras sa OCR na hindi tugma sa AI. Piliin ang tamang pagitan gamit ang reseta.');
+          m.reviewNotes.add(
+              'May nakasulat na pagitan ng oras sa OCR na hindi tugma sa AI. Piliin ang tamang pagitan gamit ang reseta.');
         }
-        if (source != srcOffline && written.scheduleKind == ScheduleKind.explicit &&
+        if (source != srcOffline &&
+            written.scheduleKind == ScheduleKind.explicit &&
             (m.times.length != written.times.length ||
                 !m.times.every(written.times.contains))) {
           m.scheduleKind = ScheduleKind.unknown;
-          m.reviewNotes.add('May nakasulat na oras sa OCR na hindi tugma sa AI. Suriin at itama ang mga oras.');
+          m.reviewNotes.add(
+              'May nakasulat na oras sa OCR na hindi tugma sa AI. Suriin at itama ang mga oras.');
         }
-        if (source != srcOffline && written.scheduleKind == ScheduleKind.unknown &&
-            written.reviewNotes.any((note) => note.contains('Magkasalungat') || note.contains('Hindi malinaw'))) {
+        if (source != srcOffline &&
+            written.scheduleKind == ScheduleKind.unknown &&
+            written.reviewNotes.any((note) =>
+                note.contains('Magkasalungat') ||
+                note.contains('Hindi malinaw'))) {
           m.scheduleKind = ScheduleKind.unknown;
           m.reviewNotes.addAll(written.reviewNotes);
         }
@@ -152,16 +165,20 @@ How to read it:
       ];
       if (w.isNotEmpty) warnings[m.id] = w.join('\n');
     }
-    if (source != srcOffline && writtenMeds.any((written) =>
-        !meds.any((medicine) => MedNames.check(written.name).name.toLowerCase() == medicine.name.toLowerCase()))) {
-      note = '${note == null ? '' : '$note\n'}Maaaring may gamot sa OCR na hindi naisama ng AI. Ikumpara ang buong reseta at idagdag ang nawawala.';
+    if (source != srcOffline &&
+        writtenMeds.any((written) => !meds.any((medicine) =>
+            MedNames.check(written.name).name.toLowerCase() ==
+            medicine.name.toLowerCase()))) {
+      note =
+          '${note == null ? '' : '$note\n'}Maaaring may gamot sa OCR na hindi naisama ng AI. Ikumpara ang buong reseta at idagdag ang nawawala.';
     }
     return ParseResult(meds, source, note, warnings);
   }
 
   static Future<List<Medicine>> _ollama(String model, String userContent,
       {String? image, Duration timeout = const Duration(seconds: 90)}) async {
-    if (_cloudModel(model)) throw const FormatException('Cloud models are not permitted.');
+    if (_cloudModel(model))
+      throw const FormatException('Cloud models are not permitted.');
     final endpoint = Store.localOllamaUri(Store.ollamaUrl);
     final res = await http
         .post(
@@ -183,8 +200,10 @@ How to read it:
           }),
         )
         .timeout(timeout);
-    if (res.statusCode != 200) throw Exception('Local AI request failed (${res.statusCode}).');
-    final content = (jsonDecode(res.body) as Map)['message']['content'] as String;
+    if (res.statusCode != 200)
+      throw Exception('Local AI request failed (${res.statusCode}).');
+    final content =
+        (jsonDecode(res.body) as Map)['message']['content'] as String;
     return medsFromContent(content);
   }
 
@@ -241,11 +260,16 @@ How to read it:
           kind = ScheduleKind.daily;
         }
       }
-      if (kind == ScheduleKind.daily && times.isEmpty &&
-          perDay != null && perDay > 0 && perDay <= 24) {
+      if (kind == ScheduleKind.daily &&
+          times.isEmpty &&
+          perDay != null &&
+          perDay > 0 &&
+          perDay <= 24) {
         times = Medicine.defaultTimes(perDay, bedtime: raw['bedtime'] == true);
       }
-      if (kind == ScheduleKind.explicit && perDay != null && perDay != times.length) {
+      if (kind == ScheduleKind.explicit &&
+          perDay != null &&
+          perDay != times.length) {
         kind = ScheduleKind.unknown;
         notes.add('Hindi tugma ang nakasulat na oras at dalas.');
       }
@@ -253,15 +277,21 @@ How to read it:
       final days = _int(raw['days']);
       final endDate = _date(raw['end_date']);
       // A prescribed calendar end date includes that day; the model bound is exclusive.
-      final end = endDate == null ? null : DateTime(endDate.year, endDate.month, endDate.day + 1);
+      final end = endDate == null
+          ? null
+          : DateTime(endDate.year, endDate.month, endDate.day + 1);
       final maintenance = raw['maintenance'] == true;
-      final invalidDuration = (raw['days'] != null && (days == null || days <= 0)) ||
-          (raw['end_date'] != null && end == null);
-      final durationConflict = (maintenance && (raw['days'] != null || end != null)) ||
-          (days != null && end != null);
+      final invalidDuration =
+          (raw['days'] != null && (days == null || days <= 0)) ||
+              (raw['end_date'] != null && end == null);
+      final durationConflict =
+          (maintenance && (raw['days'] != null || end != null)) ||
+              (days != null && end != null);
       if (durationConflict) notes.add('Magkasalungat ang haba ng gamutan.');
-      if (raw['days'] != null && days == null) notes.add('Hindi malinaw ang haba ng gamutan.');
-      if (raw['end_date'] != null && end == null) notes.add('Hindi wastong petsa ng pagtatapos.');
+      if (raw['days'] != null && days == null)
+        notes.add('Hindi malinaw ang haba ng gamutan.');
+      if (raw['end_date'] != null && end == null)
+        notes.add('Hindi wastong petsa ng pagtatapos.');
       final medicine = Medicine(
         id: '${Medicine.newId()}${out.length}',
         name: name,
@@ -273,7 +303,8 @@ How to read it:
         times: times,
         days: durationConflict ? null : days,
         end: end,
-        durationConfirmed: !durationConflict && !invalidDuration &&
+        durationConfirmed: !durationConflict &&
+            !invalidDuration &&
             ((days != null && days > 0) || end != null || maintenance),
         instructions: _text(raw['instructions']),
         stock: _int(raw['stock']),
@@ -290,47 +321,65 @@ How to read it:
 
   static int? _int(Object? value) {
     if (value is num) {
-      return value.isFinite && value == value.truncateToDouble() ? value.toInt() : null;
+      return value.isFinite && value == value.truncateToDouble()
+          ? value.toInt()
+          : null;
     }
     return value is String ? int.tryParse(value.trim()) : null;
   }
 
   static double? _num(Object? value) {
-    final parsed = value is num ? value.toDouble() :
-        value is String ? double.tryParse(value.trim()) : null;
+    final parsed = value is num
+        ? value.toDouble()
+        : value is String
+            ? double.tryParse(value.trim())
+            : null;
     return parsed != null && parsed.isFinite ? parsed : null;
   }
 
   static DateTime? _date(Object? value) {
-    if (value is! String || !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) return null;
+    if (value is! String || !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value))
+      return null;
     final parsed = DateTime.tryParse(value);
-    if (parsed == null || '${parsed.year.toString().padLeft(4, '0')}-${parsed.month.toString().padLeft(2, '0')}-${parsed.day.toString().padLeft(2, '0')}' != value) return null;
+    if (parsed == null ||
+        '${parsed.year.toString().padLeft(4, '0')}-${parsed.month.toString().padLeft(2, '0')}-${parsed.day.toString().padLeft(2, '0')}' !=
+            value) return null;
     return parsed;
   }
 
   /// A model must not erase an interval or an obvious conflict in its own directions.
   static void _checkWrittenDirections(Medicine medicine) {
     if (medicine.instructions.isEmpty) return;
-    final written = FallbackParser.parse('Prescription 1mg\n${medicine.instructions}').first;
+    final written =
+        FallbackParser.parse('Prescription 1mg\n${medicine.instructions}')
+            .first;
     medicine.reviewNotes.addAll(written.reviewNotes);
     if (written.scheduleKind == ScheduleKind.unknown &&
-        written.reviewNotes.any((note) => note.contains('Magkasalungat') || note.contains('Hindi tugma') || note.contains('hindi wastong') || note.contains('Hindi malinaw'))) {
+        written.reviewNotes.any((note) =>
+            note.contains('Magkasalungat') ||
+            note.contains('Hindi tugma') ||
+            note.contains('hindi wastong') ||
+            note.contains('Hindi malinaw'))) {
       medicine.scheduleKind = ScheduleKind.unknown;
     } else if (written.scheduleKind == ScheduleKind.interval) {
-      if (medicine.intervalHours != null && medicine.intervalHours != written.intervalHours) {
+      if (medicine.intervalHours != null &&
+          medicine.intervalHours != written.intervalHours) {
         medicine.scheduleKind = ScheduleKind.unknown;
-        medicine.reviewNotes.add('Hindi tugma ang pagitan ng oras at nakasulat na direksyon.');
+        medicine.reviewNotes
+            .add('Hindi tugma ang pagitan ng oras at nakasulat na direksyon.');
       } else {
         final alreadyInterval = medicine.scheduleKind == ScheduleKind.interval;
         medicine.scheduleKind = ScheduleKind.interval;
         medicine.intervalHours = written.intervalHours;
-        if (written.times.isNotEmpty || !alreadyInterval) medicine.times = written.times;
+        if (written.times.isNotEmpty || !alreadyInterval)
+          medicine.times = written.times;
       }
     } else if (written.scheduleKind == ScheduleKind.prn) {
       medicine.scheduleKind = ScheduleKind.prn;
       medicine.intervalHours = written.intervalHours;
     } else if (written.scheduleKind == ScheduleKind.explicit) {
-      if (medicine.frequencyPerDay != null && medicine.frequencyPerDay != written.times.length) {
+      if (medicine.frequencyPerDay != null &&
+          medicine.frequencyPerDay != written.times.length) {
         medicine.scheduleKind = ScheduleKind.unknown;
         medicine.reviewNotes.add('Hindi tugma ang nakasulat na oras at dalas.');
       } else {
@@ -342,26 +391,33 @@ How to read it:
       if (medicine.scheduleKind == ScheduleKind.daily &&
           medicine.frequencyPerDay != written.frequencyPerDay) {
         medicine.scheduleKind = ScheduleKind.unknown;
-        medicine.reviewNotes.add('Hindi tugma ang dalas at nakasulat na direksyon.');
+        medicine.reviewNotes
+            .add('Hindi tugma ang dalas at nakasulat na direksyon.');
       } else if (medicine.scheduleKind == ScheduleKind.unknown) {
         medicine.scheduleKind = ScheduleKind.daily;
         medicine.frequencyPerDay = written.frequencyPerDay;
         medicine.times = written.times;
       }
     }
-    if (written.qtyPerIntake > 0 && medicine.qtyPerIntake > 0 &&
+    if (written.qtyPerIntake > 0 &&
+        medicine.qtyPerIntake > 0 &&
         medicine.qtyPerIntake != written.qtyPerIntake) {
       medicine.qtyPerIntake = 0;
-      medicine.reviewNotes.add('Hindi tugma ang dami sa bawat inom at nakasulat na direksyon.');
+      medicine.reviewNotes
+          .add('Hindi tugma ang dami sa bawat inom at nakasulat na direksyon.');
     }
-    if (written.reviewNotes.any((note) => note.contains('Magkasalungat ang haba'))) {
+    if (written.reviewNotes
+        .any((note) => note.contains('Magkasalungat ang haba'))) {
       medicine.durationConfirmed = false;
     }
-    if (written.durationConfirmed && medicine.end == null &&
-        !medicine.reviewNotes.any((note) => note.contains('Magkasalungat ang haba'))) {
+    if (written.durationConfirmed &&
+        medicine.end == null &&
+        !medicine.reviewNotes
+            .any((note) => note.contains('Magkasalungat ang haba'))) {
       if (medicine.durationConfirmed && medicine.days != written.days) {
         medicine.durationConfirmed = false;
-        medicine.reviewNotes.add('Hindi tugma ang haba ng gamutan at nakasulat na direksyon.');
+        medicine.reviewNotes
+            .add('Hindi tugma ang haba ng gamutan at nakasulat na direksyon.');
       } else if (!medicine.durationConfirmed) {
         medicine.days = written.days;
         medicine.durationConfirmed = true;
@@ -385,7 +441,8 @@ How to read it:
   }
 
   static bool _has(List<String> models, String name) =>
-      name.isNotEmpty && !_cloudModel(name) &&
+      name.isNotEmpty &&
+      !_cloudModel(name) &&
       (models.contains(name) || models.contains('$name:latest'));
 
   static bool _cloudModel(String name) =>

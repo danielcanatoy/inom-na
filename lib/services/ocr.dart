@@ -5,7 +5,8 @@ class Ocr {
   static Future<String> read(String imagePath) async {
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
     try {
-      final result = await recognizer.processImage(InputImage.fromFilePath(imagePath));
+      final result =
+          await recognizer.processImage(InputImage.fromFilePath(imagePath));
       return result.text;
     } finally {
       await recognizer.close();

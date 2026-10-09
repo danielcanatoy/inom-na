@@ -26,7 +26,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } on FormatException catch (e) {
       if (mounted) setState(() => _status = e.message.toString());
     } catch (_) {
-      if (mounted) setState(() => _status = 'Hindi na-save o nasubukan ang Local AI settings.');
+      if (mounted)
+        setState(
+            () => _status = 'Hindi na-save o nasubukan ang Local AI settings.');
     } finally {
       if (mounted) setState(() => _busy = false);
     }

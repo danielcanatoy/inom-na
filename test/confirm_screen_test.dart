@@ -27,20 +27,25 @@ Future<void> openConfirmation(
   void Function(List<Medicine>?) onResult,
 ) async {
   await tester.pumpWidget(MaterialApp(
-    home: Builder(builder: (context) => Scaffold(
-      body: Center(child: ElevatedButton(
-        onPressed: () async {
-          final result = await Navigator.of(context).push<List<Medicine>>(
-            MaterialPageRoute(builder: (_) => ConfirmScreen(
-              result: ParseResult([medicine], RxParser.srcOffline),
-              rawText: 'Synthetic prescription text',
+    home: Builder(
+        builder: (context) => Scaffold(
+              body: Center(
+                  child: ElevatedButton(
+                onPressed: () async {
+                  final result =
+                      await Navigator.of(context).push<List<Medicine>>(
+                    MaterialPageRoute(
+                        builder: (_) => ConfirmScreen(
+                              result:
+                                  ParseResult([medicine], RxParser.srcOffline),
+                              rawText: 'Synthetic prescription text',
+                            )),
+                  );
+                  onResult(result);
+                },
+                child: const Text('Open review'),
+              )),
             )),
-          );
-          onResult(result);
-        },
-        child: const Text('Open review'),
-      )),
-    )),
   ));
   await tester.tap(find.text('Open review'));
   await tester.pumpAndSettle();
@@ -49,6 +54,7 @@ Future<void> openConfirmation(
 Future<void> tapReview(WidgetTester tester) async {
   final review = find.byType(CheckboxListTile);
   await tester.ensureVisible(review);
+  await tester.pump();
   await tester.tap(review);
   await tester.pumpAndSettle();
 }
@@ -75,7 +81,8 @@ void main() {
   testWidgets('a recognized name still requires explicit prescription review',
       (tester) async {
     List<Medicine>? returned;
-    await openConfirmation(tester, reviewedCandidate(), (value) => returned = value);
+    await openConfirmation(
+        tester, reviewedCandidate(), (value) => returned = value);
     await tapSave(tester);
     expect(returned, isNull);
     expect(find.byType(ConfirmScreen), findsOneWidget);
@@ -98,6 +105,7 @@ void main() {
 
     final doseField = fieldWithLabel('Dose / strength');
     await tester.ensureVisible(doseField);
+    await tester.pump();
     await tester.enterText(doseField, '0mg');
     await tester.pumpAndSettle();
     expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
@@ -109,6 +117,7 @@ void main() {
     expect(returned, isFalse);
 
     await tester.ensureVisible(doseField);
+    await tester.pump();
     await tester.enterText(doseField, '250mg');
     await tester.pumpAndSettle();
     await tapReview(tester);
@@ -127,9 +136,11 @@ void main() {
     });
     final nameField = fieldWithLabel('Gamot');
     await tester.ensureVisible(nameField);
+    await tester.pump();
     await tester.enterText(nameField, 'Amoxicillin');
     final doseField = fieldWithLabel('Dose / strength');
     await tester.ensureVisible(doseField);
+    await tester.pump();
     await tester.enterText(doseField, '250mg');
     await tester.pumpAndSettle();
     await tester.tap(find.byType(BackButton));
@@ -158,6 +169,7 @@ void main() {
 
     final anchor = find.textContaining('Simula / unang dose:');
     await tester.ensureVisible(anchor);
+    await tester.pump();
     await tester.tap(anchor);
     await tester.pumpAndSettle();
     expect(find.byType(DatePickerDialog), findsOneWidget);
@@ -174,7 +186,8 @@ void main() {
     expect(returned!.single.intervalHours, 8);
   });
 
-  testWidgets('contradictory written interval time blocks review until corrected',
+  testWidgets(
+      'contradictory written interval time blocks review until corrected',
       (tester) async {
     final medicine = reviewedCandidate()
       ..scheduleKind = ScheduleKind.interval
@@ -186,6 +199,7 @@ void main() {
 
     final anchor = find.textContaining('Simula / unang dose:');
     await tester.ensureVisible(anchor);
+    await tester.pump();
     await tester.tap(anchor);
     await tester.pumpAndSettle();
     await tester.tap(find.text('OK'));
@@ -202,6 +216,7 @@ void main() {
     // explicitly selected 08:00 anchor remains and must be reviewed again.
     final chip = find.byType(InputChip);
     await tester.ensureVisible(chip);
+    await tester.pump();
     final chipBounds = tester.getRect(chip);
     await tester.tapAt(Offset(chipBounds.right - 16, chipBounds.center.dy));
     await tester.pumpAndSettle();

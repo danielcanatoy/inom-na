@@ -30,7 +30,8 @@ class PlannedReminder {
         'repeatDaily': repeatDaily,
       };
 
-  factory PlannedReminder.fromJson(Map<String, dynamic> json) => PlannedReminder(
+  factory PlannedReminder.fromJson(Map<String, dynamic> json) =>
+      PlannedReminder(
         key: json['key'] as String,
         doseId: json['doseId'] as String,
         medicineId: json['medicineId'] as String,
@@ -44,7 +45,8 @@ class PlannedReminder {
     var next = when;
     if (repeatDaily) {
       while (!next.isAfter(now)) {
-        next = DateTime(next.year, next.month, next.day + 1, next.hour, next.minute);
+        next = DateTime(
+            next.year, next.month, next.day + 1, next.hour, next.minute);
       }
     }
     return PlannedReminder(
@@ -72,14 +74,21 @@ class ReminderPlan {
     final medicineIds = <String>{};
     for (final medicine in medicines) {
       if (!medicineIds.add(medicine.id)) {
-        return const ReminderPlan([], error: 'May magkaparehong medicine ID. Hindi binago ang mga paalala.');
+        return const ReminderPlan([],
+            error:
+                'May magkaparehong medicine ID. Hindi binago ang mga paalala.');
       }
       if (medicine.scheduleErrors().isNotEmpty) {
-        return const ReminderPlan([], error: 'May hindi pa wastong iskedyul. Suriin ang oras, frequency at petsa bago magpaalala.');
+        return const ReminderPlan([],
+            error:
+                'May hindi pa wastong iskedyul. Suriin ang oras, frequency at petsa bago magpaalala.');
       }
       if (medicine.isPrn) continue;
-      final extra = medicine.instructions.isEmpty ? '' : ' (${medicine.instructions})';
-      final body = 'Inumin: ${medicine.qtyLabel} ${medicine.name} ${medicine.dose}$extra'.trim();
+      final extra =
+          medicine.instructions.isEmpty ? '' : ' (${medicine.instructions})';
+      final body =
+          'Inumin: ${medicine.qtyLabel} ${medicine.name} ${medicine.dose}$extra'
+              .trim();
       final end = medicine.scheduleEnd;
       if (end != null && !end.isAfter(now)) continue;
 
@@ -87,7 +96,9 @@ class ReminderPlan {
         // Register the whole remaining finite course, never silently truncate it.
         // Taken keys may remove candidates from this budget, so allow one
         // candidate per unique taken key in addition to remaining capacity.
-        final doses = medicine.allDoses(horizon: end, from: now,
+        final doses = medicine.allDoses(
+            horizon: end,
+            from: now,
             limit: maxPending - result.length + medicine.taken.length + 2);
         for (final dose in doses) {
           if (!dose.isAfter(now) || medicine.isTaken(dose)) continue;
@@ -98,7 +109,9 @@ class ReminderPlan {
         final interval = medicine.intervalHours;
         if (medicine.scheduleKind == ScheduleKind.interval &&
             (interval == null || 24 % interval != 0)) {
-          return const ReminderPlan([], error: 'Ang tuloy-tuloy na interval na ito ay hindi pa suportado sa offline reminders. Magtakda ng end date; hindi binago ang mga paalala.');
+          return const ReminderPlan([],
+              error:
+                  'Ang tuloy-tuloy na interval na ito ay hindi pa suportado sa offline reminders. Magtakda ng end date; hindi binago ang mga paalala.');
         }
         // Daily repeating series continue while the app is closed, indefinitely.
         // Start after every already-taken occurrence, including an early marking.
@@ -110,8 +123,8 @@ class ReminderPlan {
           final time = _time(dose);
           var next = dose;
           while (medicine.isTaken(next)) {
-            next = DateTime(next.year, next.month, next.day + 1,
-                next.hour, next.minute, next.second, next.millisecond, next.microsecond);
+            next = DateTime(next.year, next.month, next.day + 1, next.hour,
+                next.minute, next.second, next.millisecond, next.microsecond);
           }
           byTime.putIfAbsent(time, () => next);
         }
@@ -134,7 +147,8 @@ class ReminderPlan {
         if (perDay.isFinite && perDay > 0 && (medicine.stock ?? 0) > 0) {
           final covered = (medicine.stock! / perDay).floor();
           final start = medicine.start;
-          final alert = DateTime(start.year, start.month, start.day + covered - 3, 9);
+          final alert =
+              DateTime(start.year, start.month, start.day + covered - 3, 9);
           if (alert.isAfter(now)) {
             result.add(PlannedReminder(
               key: 'refill:${medicine.id}',
@@ -153,10 +167,13 @@ class ReminderPlan {
     return ReminderPlan(result);
   }
 
-  static String seriesKey(String medicineId, String time) => 'daily:$medicineId:$time';
+  static String seriesKey(String medicineId, String time) =>
+      'daily:$medicineId:$time';
   static String timeOf(DateTime dose) => _time(dose);
-  static String _time(DateTime dose) => '${dose.hour.toString().padLeft(2, '0')}:${dose.minute.toString().padLeft(2, '0')}';
-  static PlannedReminder _dose(Medicine medicine, DateTime dose, String body) => PlannedReminder(
+  static String _time(DateTime dose) =>
+      '${dose.hour.toString().padLeft(2, '0')}:${dose.minute.toString().padLeft(2, '0')}';
+  static PlannedReminder _dose(Medicine medicine, DateTime dose, String body) =>
+      PlannedReminder(
         key: 'dose:${medicine.doseId(dose)}',
         doseId: medicine.doseId(dose),
         medicineId: medicine.id,
@@ -164,5 +181,7 @@ class ReminderPlan {
         title: 'Oras na ng gamot',
         body: body,
       );
-  static ReminderPlan _capacityFailure() => const ReminderPlan([], error: 'Mahigit 400 paalala ang kailangan. Hindi binago ang mga dating paalala. Hindi suportado ang dami ng paalala sa kasalukuyang app. Huwag baguhin ang reseta para magkasya; gumamit muna ng ibang paraan ng paalala.');
+  static ReminderPlan _capacityFailure() => const ReminderPlan([],
+      error:
+          'Mahigit 400 paalala ang kailangan. Hindi binago ang mga dating paalala. Hindi suportado ang dami ng paalala sa kasalukuyang app. Huwag baguhin ang reseta para magkasya; gumamit muna ng ibang paraan ng paalala.');
 }

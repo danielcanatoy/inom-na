@@ -37,7 +37,8 @@ class MedNames {
     'Salbutamol', 'Montelukast', 'Ambroxol', 'Carbocisteine',
     'Guaifenesin', 'Lagundi', 'Sambong',
     // Iba pa
-    'Prednisone', 'Prednisolone', 'Dexamethasone', 'Methylprednisolone', 'Allopurinol',
+    'Prednisone', 'Prednisolone', 'Dexamethasone', 'Methylprednisolone',
+    'Allopurinol',
     'Colchicine', 'Levothyroxine', 'Ferrous Sulfate', 'Folic Acid',
     'Ascorbic Acid', 'Calcium Carbonate', 'Betahistine', 'Cinnarizine',
     'Mebendazole', 'Albendazole', 'Isoniazid', 'Rifampicin', 'Ethambutol',
@@ -53,23 +54,30 @@ class MedNames {
     final lower = input.toLowerCase();
     if (input.isEmpty) return NameCheck(input, NameStatus.unknown, null);
 
-    final ranked = [for (final c in common) (distance(lower, c.toLowerCase()), c)]
-      ..sort((a, b) => a.$1.compareTo(b.$1));
+    final ranked = [
+      for (final c in common) (distance(lower, c.toLowerCase()), c)
+    ]..sort((a, b) => a.$1.compareTo(b.$1));
     final (bestD, best) = ranked[0];
     final secondD = ranked[1].$1;
     if (bestD == 0) return NameCheck(best, NameStatus.known, null);
 
     final maxD = lower.length < 5 ? 0 : (lower.length <= 9 ? 1 : 2);
-    final clearWinner = secondD > bestD + 1; // walang ibang gamot na halos kasing-lapit
+    final clearWinner =
+        secondD > bestD + 1; // walang ibang gamot na halos kasing-lapit
     final sameStart = lower[0] == best[0].toLowerCase();
     if (bestD <= maxD && clearWinner && sameStart) {
       return NameCheck(best, NameStatus.corrected,
           "⚠️ Nabasa: '$input' → ginawang '$best'. Pakisuri.");
     }
 
-    final near = [for (final r in ranked) if (r.$1 <= maxD + 1) r.$2].take(2).toList();
+    final near = [
+      for (final r in ranked)
+        if (r.$1 <= maxD + 1) r.$2
+    ].take(2).toList();
     if (near.isNotEmpty) {
-      return NameCheck(input, NameStatus.uncertain,
+      return NameCheck(
+          input,
+          NameStatus.uncertain,
           "⚠️ Nabasa: '$input'. Hindi sigurado: baka ${near.map((n) => "'$n'").join(' o ')}? "
           'Pakisuri sa reseta.');
     }

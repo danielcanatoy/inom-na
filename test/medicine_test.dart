@@ -127,7 +127,8 @@ void main() {
       expect(medicine.allDoses(horizon: DateTime(2026, 10, 10)).length, 3);
     });
 
-    test('all supported suggested daily schedules contain unique valid times', () {
+    test('all supported suggested daily schedules contain unique valid times',
+        () {
       for (var count = 1; count <= 24; count++) {
         final times = Medicine.defaultTimes(count);
         expect(times.length, count);
@@ -176,7 +177,8 @@ void main() {
       }
     });
 
-    test('duplicates, invalid times and daily count conflicts are rejected', () {
+    test('duplicates, invalid times and daily count conflicts are rejected',
+        () {
       final medicine = dailyMedicine()..times = ['08:00', '08:00'];
       expect(medicine.scheduleErrors(), isNotEmpty);
       expect(medicine.allDoses(horizon: DateTime(2026, 10, 10)), isEmpty);
@@ -244,7 +246,8 @@ void main() {
           'taken': ['2026-10-09 20:00'],
         };
 
-    test('legacy course count and scheduled keys survive a versioned roundtrip', () {
+    test('legacy course count and scheduled keys survive a versioned roundtrip',
+        () {
       final medicine = Medicine.fromJson(legacyRecord());
       expect(medicine.legacy, isTrue);
       expect(medicine.qtyPerIntake, 1);
@@ -259,7 +262,8 @@ void main() {
       expect(decoded.toJson()['schemaVersion'], 2);
     });
 
-    test('legacy dose generation respects horizon without losing future count', () {
+    test('legacy dose generation respects horizon without losing future count',
+        () {
       final medicine = Medicine.fromJson(legacyRecord());
       expect(medicine.allDoses(horizon: DateTime(2026, 10, 10)),
           [DateTime(2026, 10, 9, 20)]);
@@ -287,7 +291,9 @@ void main() {
       expect(medicine.taken, isEmpty);
     });
 
-    test('legacy duplicate keys are deduplicated without fabricating timestamps', () {
+    test(
+        'legacy duplicate keys are deduplicated without fabricating timestamps',
+        () {
       final record = legacyRecord()
         ..['taken'] = ['2026-10-09 20:00', '2026-10-09 20:00'];
       final medicine = Medicine.fromJson(record);
@@ -295,13 +301,15 @@ void main() {
       expect(medicine.toJson().containsKey('takenAt'), isFalse);
     });
 
-    test('missing or corrupt start cannot invent a prescription start date', () {
+    test('missing or corrupt start cannot invent a prescription start date',
+        () {
       final record = legacyRecord()..['start'] = 'invalid';
       expect(() => Medicine.fromJson(record), throwsFormatException);
     });
 
     test('modern interval semantics survive persistence', () {
-      final medicine = intervalMedicine()..reviewNotes = ['Suriin ang tagubilin'];
+      final medicine = intervalMedicine()
+        ..reviewNotes = ['Suriin ang tagubilin'];
       final decoded = Medicine.fromJson(medicine.toJson());
       expect(decoded.scheduleKind, ScheduleKind.interval);
       expect(decoded.intervalHours, 8);
@@ -311,7 +319,8 @@ void main() {
           medicine.allDoses(horizon: DateTime(2026, 10, 20)));
     });
 
-    test('review drafts do not share mutable lists with original medicines', () {
+    test('review drafts do not share mutable lists with original medicines',
+        () {
       final original = dailyMedicine()..reviewNotes = ['Original note'];
       final draft = Medicine.fromJson(original.toJson());
       draft.times.add('20:00');

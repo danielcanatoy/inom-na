@@ -99,8 +99,8 @@ class Medicine {
   static DateTime atTime(DateTime day, String hhmm) {
     if (!validTime(hhmm)) throw const FormatException('Invalid HH:mm time');
     final parts = hhmm.split(':');
-    return DateTime(day.year, day.month, day.day, int.parse(parts[0]),
-        int.parse(parts[1]));
+    return DateTime(
+        day.year, day.month, day.day, int.parse(parts[0]), int.parse(parts[1]));
   }
 
   static String keyOf(DateTime dt) =>
@@ -166,10 +166,13 @@ class Medicine {
       errors.add('Hindi maaaring lumampas sa 3650 araw ang pagtatapos.');
     }
     if (days != null && end != null) {
-      errors.add('Gamitin ang bilang ng araw o petsa ng pagtatapos, hindi pareho.');
+      errors.add(
+          'Gamitin ang bilang ng araw o petsa ng pagtatapos, hindi pareho.');
     }
     if (scheduleKind == ScheduleKind.interval) {
-      if (intervalHours == null || intervalHours! <= 0 || intervalHours! > 168) {
+      if (intervalHours == null ||
+          intervalHours! <= 0 ||
+          intervalHours! > 168) {
         errors.add('Ang pagitan ng oras ay dapat 1–168 oras.');
       }
       if (times.any((time) => !validTime(time)) ||
@@ -179,7 +182,9 @@ class Medicine {
     }
     if (scheduleKind == ScheduleKind.daily ||
         scheduleKind == ScheduleKind.explicit) {
-      if (times.isEmpty || times.length > 24 || times.any((t) => !validTime(t))) {
+      if (times.isEmpty ||
+          times.length > 24 ||
+          times.any((t) => !validTime(t))) {
         errors.add('Maglagay ng wastong oras sa format na HH:mm.');
       }
       if (times.toSet().length != times.length) {
@@ -207,9 +212,8 @@ class Medicine {
         ...scheduleErrors(),
       ];
 
-  int? get _legacyTotal => legacy && days != null && !isPrn
-      ? days! * times.length
-      : null;
+  int? get _legacyTotal =>
+      legacy && days != null && !isPrn ? days! * times.length : null;
 
   DateTime? get _legacyLastDose {
     final total = _legacyTotal;
@@ -223,8 +227,8 @@ class Medicine {
         .toList();
     if (total <= firstDay.length) return firstDay[total - 1];
     final remainingIndex = total - firstDay.length - 1;
-    final lastDay = DateTime(day.year, day.month,
-        day.day + 1 + remainingIndex ~/ sorted.length);
+    final lastDay = DateTime(
+        day.year, day.month, day.day + 1 + remainingIndex ~/ sorted.length);
     return atTime(lastDay, sorted[remainingIndex % sorted.length]);
   }
 
@@ -249,9 +253,7 @@ class Medicine {
   }) {
     if (limit != null && limit <= 0) return [];
     if (isPrn || scheduleErrors().isNotEmpty) return [];
-    var cutoff = legacy
-        ? start.subtract(const Duration(minutes: 30))
-        : start;
+    var cutoff = legacy ? start.subtract(const Duration(minutes: 30)) : start;
     final startDay = DateTime(start.year, start.month, start.day);
     if (legacy && cutoff.isBefore(startDay)) cutoff = startDay;
     final lower = from != null && from.isAfter(cutoff) ? from : cutoff;
@@ -366,7 +368,8 @@ class Medicine {
   factory Medicine.fromJson(Map<String, dynamic> json) {
     final oldSchema = !json.containsKey('schemaVersion');
     final legacy = oldSchema || json['legacy'] == true;
-    final times = (json['times'] as List?)?.cast<String>().toList() ?? <String>[];
+    final times =
+        (json['times'] as List?)?.cast<String>().toList() ?? <String>[];
     final start = DateTime.tryParse(json['start'] as String? ?? '');
     if (start == null) throw const FormatException('Invalid medication start');
     final rawEnd = json['end'] as String?;
@@ -384,7 +387,8 @@ class Medicine {
       id: json['id'] as String,
       name: json['name'] as String,
       dose: (json['dose'] ?? '') as String,
-      qtyPerIntake: (json['qtyPerIntake'] as num?)?.toDouble() ?? (legacy ? 1 : 0),
+      qtyPerIntake:
+          (json['qtyPerIntake'] as num?)?.toDouble() ?? (legacy ? 1 : 0),
       times: times,
       days: json['days'] as int?,
       instructions: (json['instructions'] ?? '') as String,
@@ -392,7 +396,8 @@ class Medicine {
       start: start,
       taken: (json['taken'] as List?)?.cast<String>(),
       scheduleKind: kind,
-      frequencyPerDay: oldSchema ? times.length : json['frequencyPerDay'] as int?,
+      frequencyPerDay:
+          oldSchema ? times.length : json['frequencyPerDay'] as int?,
       intervalHours: json['intervalHours'] as int?,
       durationConfirmed: oldSchema || json['durationConfirmed'] == true,
       end: end,

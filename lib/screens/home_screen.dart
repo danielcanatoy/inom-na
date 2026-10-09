@@ -58,8 +58,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final result = await Scheduler.rescheduleAll(_snapshot());
     _checkingReminders = false;
     if (!mounted || _saving) return;
-    setState(() => _notice = result.success ? result.message :
-      result.message ?? 'Hindi handa ang mga paalala.');
+    setState(() => _notice = result.success
+        ? result.message
+        : result.message ?? 'Hindi handa ang mga paalala.');
   }
 
   List<Medicine> _snapshot() =>
@@ -78,11 +79,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final result = takenMedicine != null && takenDose != null
           ? await Scheduler.cancelDose(takenMedicine, takenDose)
           : await Scheduler.rescheduleAll(candidate);
-      final notice = result.success ? result.message
+      final notice = result.success
+          ? result.message
           : 'Naka-save ang mga gamot, ngunit ${result.message ?? "hindi nairehistro ang paalala."}';
       if (mounted) setState(() => _notice = notice);
-      return SchedulerResult(success: result.success,
-          message: notice, exact: result.exact);
+      return SchedulerResult(
+          success: result.success, message: notice, exact: result.exact);
     } catch (_) {
       final message = stored
           ? 'Naka-save ang mga gamot, ngunit hindi nakumpleto ang mga paalala.'
@@ -97,18 +99,22 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<T> _withLoading<T>(String message, Future<T> Function() action) async {
     final navigator = Navigator.of(context, rootNavigator: true);
     final route = DialogRoute<void>(
-      context: context, barrierDismissible: false,
-      builder: (_) => PopScope(canPop: false, child: AlertDialog(
-        content: Row(children: [
-          const CircularProgressIndicator(),
-          const SizedBox(width: 20),
-          Expanded(child: Text(message)),
-        ]),
-      )),
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => PopScope(
+          canPop: false,
+          child: AlertDialog(
+            content: Row(children: [
+              const CircularProgressIndicator(),
+              const SizedBox(width: 20),
+              Expanded(child: Text(message)),
+            ]),
+          )),
     );
     unawaited(navigator.push<void>(route));
-    try { return await action(); }
-    finally {
+    try {
+      return await action();
+    } finally {
       if (route.isActive) navigator.removeRoute(route);
     }
   }
@@ -149,15 +155,19 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         context: context,
         builder: (c) => AlertDialog(
           title: const Text('I-type ang reseta'),
-          content: TextField(controller: ctrl, maxLines: 6,
-            decoration: const InputDecoration(
-              hintText: 'Amoxicillin 500mg\n1 cap TID x 7 days #21',
-              border: OutlineInputBorder())),
+          content: TextField(
+              controller: ctrl,
+              maxLines: 6,
+              decoration: const InputDecoration(
+                  hintText: 'Amoxicillin 500mg\n1 cap TID x 7 days #21',
+                  border: OutlineInputBorder())),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(c),
-              child: const Text('Kanselahin')),
-            FilledButton(onPressed: () => Navigator.pop(c, ctrl.text),
-              child: const Text('Basahin')),
+            TextButton(
+                onPressed: () => Navigator.pop(c),
+                child: const Text('Kanselahin')),
+            FilledButton(
+                onPressed: () => Navigator.pop(c, ctrl.text),
+                child: const Text('Basahin')),
           ],
         ),
       );
@@ -174,9 +184,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _openConfirm(ParseResult result, String rawText) async {
-    final saved = await Navigator.push<List<Medicine>>(context,
-      MaterialPageRoute(builder: (_) =>
-          ConfirmScreen(result: result, rawText: rawText)));
+    final saved = await Navigator.push<List<Medicine>>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => ConfirmScreen(result: result, rawText: rawText)));
     if (!mounted || saved == null || saved.isEmpty) return;
     // Preserve the reviewed start, end and interval anchor.
     await Scheduler.requestPermissions();
@@ -184,10 +195,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final outcome = await _commit([..._snapshot(), ...saved]);
     if (outcome == null) return;
     _snack(outcome.success
-      ? outcome.message ?? (saved.every((m) => m.isPrn)
-          ? 'Naka-save ang PRN na gamot. Walang naka-schedule na paalala para rito.'
-          : 'Naka-save at nairehistro ang paalala para sa ${saved.length} gamot.')
-      : outcome.message ?? 'Hindi nairehistro ang paalala.');
+        ? outcome.message ??
+            (saved.every((m) => m.isPrn)
+                ? 'Naka-save ang PRN na gamot. Walang naka-schedule na paalala para rito.'
+                : 'Naka-save at nairehistro ang paalala para sa ${saved.length} gamot.')
+        : outcome.message ?? 'Hindi nairehistro ang paalala.');
   }
 
   Future<void> _take(Medicine medicine, DateTime dose, bool value) async {
@@ -207,41 +219,53 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() => _saving = true);
     try {
       await Scheduler.requestPermissions();
-      final result = await Scheduler.testInOneMinute(
-          _meds.isEmpty ? null : _meds.first);
+      final result =
+          await Scheduler.testInOneMinute(_meds.isEmpty ? null : _meds.first);
       _snack(result.success
           ? result.message ?? 'Nairehistro ang test reminder para sa 1 minuto.'
           : result.message ?? 'Hindi nairehistro ang test reminder.');
       if (mounted) setState(() => _notice = result.message);
     } catch (_) {
-      _snack('Hindi nairehistro ang test reminder. Suriin ang Android settings.');
+      _snack(
+          'Hindi nairehistro ang test reminder. Suriin ang Android settings.');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
   void _pickSource() {
-    showModalBottomSheet(context: context, builder: (c) => SafeArea(
-      child: Column(mainAxisSize: MainAxisSize.min, children: [
-        ListTile(leading: const Icon(Icons.photo_camera),
-          title: const Text('Kunan ng picture'), onTap: () {
-            Navigator.pop(c); unawaited(_scan(ImageSource.camera));
-          }),
-        ListTile(leading: const Icon(Icons.photo_library),
-          title: const Text('Pumili sa gallery'), onTap: () {
-            Navigator.pop(c); unawaited(_scan(ImageSource.gallery));
-          }),
-        ListTile(leading: const Icon(Icons.keyboard),
-          title: const Text('I-type na lang'), onTap: () {
-            Navigator.pop(c); unawaited(_typeRx());
-          }),
-      ]),
-    ));
+    showModalBottomSheet(
+        context: context,
+        builder: (c) => SafeArea(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                ListTile(
+                    leading: const Icon(Icons.photo_camera),
+                    title: const Text('Kunan ng picture'),
+                    onTap: () {
+                      Navigator.pop(c);
+                      unawaited(_scan(ImageSource.camera));
+                    }),
+                ListTile(
+                    leading: const Icon(Icons.photo_library),
+                    title: const Text('Pumili sa gallery'),
+                    onTap: () {
+                      Navigator.pop(c);
+                      unawaited(_scan(ImageSource.gallery));
+                    }),
+                ListTile(
+                    leading: const Icon(Icons.keyboard),
+                    title: const Text('I-type na lang'),
+                    onTap: () {
+                      Navigator.pop(c);
+                      unawaited(_typeRx());
+                    }),
+              ]),
+            ));
   }
 
   void _snack(String msg) {
-    if (mounted) ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg)));
+    if (mounted)
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   String _fmt(DateTime d) {
@@ -266,62 +290,85 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
     return Scaffold(
       appBar: AppBar(title: const Text('Inom Na! 💊'), actions: [
-        IconButton(tooltip: 'Subukan ang paalala (1 minuto)',
-          icon: const Icon(Icons.notifications_active),
-          onPressed: _saving ? null : _testReminder),
-        IconButton(icon: const Icon(Icons.settings), onPressed: () =>
-          Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const SettingsScreen()))),
+        IconButton(
+            tooltip: 'Subukan ang paalala (1 minuto)',
+            icon: const Icon(Icons.notifications_active),
+            onPressed: _saving ? null : _testReminder),
+        IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const SettingsScreen()))),
       ]),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _saving || _processing || Store.loadError != null
-            ? null : _pickSource,
-        icon: const Icon(Icons.document_scanner),
-        label: const Text('I-scan ang reseta')),
-      body: ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-        children: [
-          if (_notice != null)
-            Card(color: Colors.amber.shade50, child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(_notice!),
-                if (Store.loadError == null)
-                  TextButton(onPressed: _saving ? null : () async {
-                    await Scheduler.requestPermissions();
-                    await _refreshReminders();
-                  }, child: const Text('Suriin / subukan muli ang paalala')),
-              ]),
-            )),
-          if (_saving) const LinearProgressIndicator(),
-          if (_meds.isEmpty) const _Empty(),
-          for (final m in lowStock)
-            Card(color: Colors.orange.shade100, child: ListTile(
-              leading: const Icon(Icons.shopping_cart, color: Colors.deepOrange),
-              title: Text('Malapit nang maubos ang ${m.name}'),
-              subtitle: Text('${m.daysLeft!.clamp(0, 99).floor()} araw na lang.'))),
-          if (_meds.isNotEmpty) ...[
-            Text('Ngayong araw', style: Theme.of(context).textTheme.titleLarge),
-            const SizedBox(height: 8),
-            if (todayDoses.isEmpty)
-              const Text('Walang naka-schedule na gamot ngayon.'),
-            for (final (m, d) in todayDoses)
-              Card(child: CheckboxListTile(
-                value: m.isTaken(d),
-                onChanged: _saving ? null :
-                    (v) => unawaited(_take(m, d, v == true)),
-                title: Text('${_fmt(d)} · ${m.name} ${m.dose}'),
-                subtitle: Text([
-                  'Dami: ${m.qtyLabel}',
-                  if (m.instructions.isNotEmpty) m.instructions,
-                ].join(' · ')),
-                secondary: Icon(m.isTaken(d) ? Icons.check_circle : Icons.schedule,
-                  color: m.isTaken(d) ? Colors.green :
-                    (d.isBefore(now) ? Colors.red : null)))),
-            const SizedBox(height: 16),
-            Text('Mga gamot ko', style: Theme.of(context).textTheme.titleLarge),
-            for (final m in _meds) _medCard(m, now),
-          ],
-        ]),
+          onPressed: _saving || _processing || Store.loadError != null
+              ? null
+              : _pickSource,
+          icon: const Icon(Icons.document_scanner),
+          label: const Text('I-scan ang reseta')),
+      body: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+          children: [
+            if (_notice != null)
+              Card(
+                  color: Colors.amber.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_notice!),
+                          if (Store.loadError == null)
+                            TextButton(
+                                onPressed: _saving
+                                    ? null
+                                    : () async {
+                                        await Scheduler.requestPermissions();
+                                        await _refreshReminders();
+                                      },
+                                child: const Text(
+                                    'Suriin / subukan muli ang paalala')),
+                        ]),
+                  )),
+            if (_saving) const LinearProgressIndicator(),
+            if (_meds.isEmpty) const _Empty(),
+            for (final m in lowStock)
+              Card(
+                  color: Colors.orange.shade100,
+                  child: ListTile(
+                      leading: const Icon(Icons.shopping_cart,
+                          color: Colors.deepOrange),
+                      title: Text('Malapit nang maubos ang ${m.name}'),
+                      subtitle: Text(
+                          '${m.daysLeft!.clamp(0, 99).floor()} araw na lang.'))),
+            if (_meds.isNotEmpty) ...[
+              Text('Ngayong araw',
+                  style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 8),
+              if (todayDoses.isEmpty)
+                const Text('Walang naka-schedule na gamot ngayon.'),
+              for (final (m, d) in todayDoses)
+                Card(
+                    child: CheckboxListTile(
+                        value: m.isTaken(d),
+                        onChanged: _saving
+                            ? null
+                            : (v) => unawaited(_take(m, d, v == true)),
+                        title: Text('${_fmt(d)} · ${m.name} ${m.dose}'),
+                        subtitle: Text([
+                          'Dami: ${m.qtyLabel}',
+                          if (m.instructions.isNotEmpty) m.instructions,
+                        ].join(' · ')),
+                        secondary: Icon(
+                            m.isTaken(d) ? Icons.check_circle : Icons.schedule,
+                            color: m.isTaken(d)
+                                ? Colors.green
+                                : (d.isBefore(now) ? Colors.red : null)))),
+              const SizedBox(height: 16),
+              Text('Mga gamot ko',
+                  style: Theme.of(context).textTheme.titleLarge),
+              for (final m in _meds) _medCard(m, now),
+            ],
+          ]),
     );
   }
 
@@ -329,36 +376,50 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final due = m.allDoses(horizon: now);
     final takenDue = due.where(m.isTaken).length;
     final total = m.totalDoses;
-    return Card(child: ListTile(
+    return Card(
+        child: ListTile(
       title: Text('${m.name} ${m.dose}'),
       subtitle: Text([
         m.frequencyLabel,
-        if (m.legacy) 'Dating record: napanatili ang orihinal na iskedyul. '
-            'Hindi nito pinatutunayang tama ang dating pagbasa; ikumpara sa reseta.',
+        if (m.legacy)
+          'Dating record: napanatili ang orihinal na iskedyul. '
+              'Hindi nito pinatutunayang tama ang dating pagbasa; ikumpara sa reseta.',
         if (m.times.isNotEmpty && m.scheduleKind != ScheduleKind.interval)
           'Oras: ${m.times.join(', ')}',
         if (due.isNotEmpty) 'Nainom: $takenDue/${due.length} na dose',
-        if (total != null) 'Nakatalang nainom: ${m.taken.toSet().length}/$total',
+        if (total != null)
+          'Nakatalang nainom: ${m.taken.toSet().length}/$total',
         if (m.allTaken) 'Nainom lahat ng nakatakdang dose',
-        if (m.isFinished) 'Natapos ang iskedyul; hindi ito patunay na nainom lahat.',
+        if (m.isFinished)
+          'Natapos ang iskedyul; hindi ito patunay na nainom lahat.',
       ].join('\n')),
-      trailing: IconButton(icon: const Icon(Icons.delete_outline),
-        onPressed: _saving ? null : () async {
-          final ok = await showDialog<bool>(context: context, builder: (c) =>
-            AlertDialog(title: Text('Tanggalin ang ${m.name}?'), actions: [
-              TextButton(onPressed: () => Navigator.pop(c, false),
-                child: const Text('Hindi')),
-              FilledButton(onPressed: () => Navigator.pop(c, true),
-                child: const Text('Oo')),
-            ]));
-          if (ok == true && mounted && !_saving) {
-            final candidate = _snapshot()..removeWhere((item) => item.id == m.id);
-            final result = await _commit(candidate);
-            if (result != null && !result.success) {
-              _snack(result.message ?? 'Hindi nakumpleto ang pagbabago.');
-            }
-          }
-        }),
+      trailing: IconButton(
+          icon: const Icon(Icons.delete_outline),
+          onPressed: _saving
+              ? null
+              : () async {
+                  final ok = await showDialog<bool>(
+                      context: context,
+                      builder: (c) => AlertDialog(
+                              title: Text('Tanggalin ang ${m.name}?'),
+                              actions: [
+                                TextButton(
+                                    onPressed: () => Navigator.pop(c, false),
+                                    child: const Text('Hindi')),
+                                FilledButton(
+                                    onPressed: () => Navigator.pop(c, true),
+                                    child: const Text('Oo')),
+                              ]));
+                  if (ok == true && mounted && !_saving) {
+                    final candidate = _snapshot()
+                      ..removeWhere((item) => item.id == m.id);
+                    final result = await _commit(candidate);
+                    if (result != null && !result.success) {
+                      _snack(
+                          result.message ?? 'Hindi nakumpleto ang pagbabago.');
+                    }
+                  }
+                }),
     ));
   }
 }
@@ -367,16 +428,17 @@ class _Empty extends StatelessWidget {
   const _Empty();
   @override
   Widget build(BuildContext context) => const Padding(
-    padding: EdgeInsets.all(32),
-    child: Column(children: [
-      Icon(Icons.medication_outlined, size: 72),
-      SizedBox(height: 16),
-      Text('Wala pang gamot', style: TextStyle(fontSize: 20,
-        fontWeight: FontWeight.bold)),
-      SizedBox(height: 8),
-      Text('Kunan ng picture ang reseta o label ng gamot. '
-        'Suriin muna ang detalye bago mag-set ng offline na paalala.',
-        textAlign: TextAlign.center),
-    ]),
-  );
+        padding: EdgeInsets.all(32),
+        child: Column(children: [
+          Icon(Icons.medication_outlined, size: 72),
+          SizedBox(height: 16),
+          Text('Wala pang gamot',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+          SizedBox(height: 8),
+          Text(
+              'Kunan ng picture ang reseta o label ng gamot. '
+              'Suriin muna ang detalye bago mag-set ng offline na paalala.',
+              textAlign: TextAlign.center),
+        ]),
+      );
 }

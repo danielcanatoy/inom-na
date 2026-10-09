@@ -49,7 +49,8 @@ void main() {
   });
 
   test('Cross-check sa OCR text (para sa vision model)', () {
-    const ocr = 'SAMPLE FOR DEMO ONLY\nRx Carbocistiene 500mg #15\nSig 1 cap TID';
+    const ocr =
+        'SAMPLE FOR DEMO ONLY\nRx Carbocistiene 500mg #15\nSig 1 cap TID';
     expect(MedNames.foundInText('Carbocisteine', ocr), isTrue);
     expect(MedNames.foundInText('Cefixime', ocr), isFalse);
   });

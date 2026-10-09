@@ -13,10 +13,12 @@ class FallbackParser {
     caseSensitive: false,
   );
   static final _daily = <int, RegExp>{
-    4: RegExp(r'\b(?:q\.?i\.?d\.?|4x|4\s*times)\b', caseSensitive: false),
-    3: RegExp(r'\b(?:t\.?i\.?d\.?|3x|thrice|3\s*times)\b',
+    4: RegExp(r'\b(?:q\.?i\.?d\.?|4x|4\s*times|four\s*times)\b',
         caseSensitive: false),
-    2: RegExp(r'\b(?:b\.?i\.?d\.?|2x|twice|2\s*times)\b', caseSensitive: false),
+    3: RegExp(r'\b(?:t\.?i\.?d\.?|3x|thrice|3\s*times|three\s*times)\b',
+        caseSensitive: false),
+    2: RegExp(r'\b(?:b\.?i\.?d\.?|2x|twice|2\s*times|two\s*times)\b',
+        caseSensitive: false),
     1: RegExp(r'\b(?:o\.?d\.?|q\.?d\.?|once|1x|daily|isang\s*beses)\b',
         caseSensitive: false),
   };
@@ -29,10 +31,20 @@ class FallbackParser {
       r'(?:x|for|sa\s*loob\s*ng)?\s*(\d{1,3})\s*(days?|araw|weeks?|wks?|linggo)\b',
       caseSensitive: false);
   // "Continue" alone does not establish an indefinite prescription.
-  static final _maint = RegExp(r'\b(maintenance|indefinitely|tuloy.tuloy)\b',
+  // "Continue" alone stays unresolved; an explicit "ongoing"/"long-term"
+  // duration is accepted and still requires user verification.
+  static final _maint = RegExp(
+      r'\b(maintenance|indefinitely|tuloy.tuloy|ongoing|long[\s-]?term)\b',
       caseSensitive: false);
-  static final _stock =
-      RegExp(r'(?:#|qty\.?:?|no\.)\s*(\d{1,4})\b', caseSensitive: false);
+  static final _stock = RegExp(
+      r'(?:#|qty\.?:?|quantity\s*:?|disp\.?\s*:?|no\.)\s*#?\s*(\d{1,4})\b',
+      caseSensitive: false);
+
+  /// "Medicine:", "Medication:", "Drug:", "Generic name:" label prefixes.
+  static final _label = RegExp(
+      r'^\s*(?:medicine|medication|drug|generic(?:\s+name)?|brand(?:\s+name)?)'
+      r'\s*[:\-]\s*',
+      caseSensitive: false);
   static final _qty = RegExp(
       r'(1/2|½|\d+(?:\.\d+)?)\s*(tabs?|tablets?|caps?|capsules?|tsp|ml|puffs?|drops?)\b',
       caseSensitive: false);
@@ -142,7 +154,17 @@ class FallbackParser {
   /// fixing so they can be flagged for review; never applied silently.
   static (String, List<String>) _normalizeOcr(String line) {
     final unclear = <String>[];
-    var result = line.replaceAll(RegExp(r'\([^)]*\)'), ' ');
+    var result = line
+        .replaceAll(RegExp(r'\([^)]*\)'), ' ')
+        .replaceFirst(_label, '')
+        .replaceAll(RegExp(r'\s{2,}'), ' ');
+    // Digits misread together with the unit, e.g. "5OO rng" -> "500mg".
+    result = result.replaceAllMapped(
+        RegExp(r'\b([0-9OolI|]*\d[0-9OolI|]*)\s*(rng|rnq|mq|nng)\b',
+            caseSensitive: false), (m) {
+      unclear.add(m[0]!);
+      return '${m[1]!.replaceAll(RegExp('[Oo]'), '0').replaceAll(RegExp('[lI|]'), '1')}mg';
+    });
     result = result.replaceAllMapped(
         RegExp(r'(\d)\s*(rng|rnq|mq|nng)\b', caseSensitive: false), (m) {
       unclear.add(m[0]!);
@@ -295,9 +317,20 @@ class FallbackParser {
         draft.invalidInterval = true;
       }
     }
-    for (final entry in _daily.entries) {
-      if (entry.value.hasMatch(line)) draft.frequencies.add(entry.key);
+    final found = <int>{
+      for (final entry in _daily.entries)
+        if (entry.value.hasMatch(line)) entry.key
+    };
+    // "twice daily"/"three times daily": the word "daily" belongs to the
+    // stated count and is not a separate once-daily instruction.
+    if (found.length > 1 &&
+        found.contains(1) &&
+        !RegExp(r'\b(?:o\.?d\.?|q\.?d\.?|once|1x|isang\s*beses)\b',
+                caseSensitive: false)
+            .hasMatch(line)) {
+      found.remove(1);
     }
+    draft.frequencies.addAll(found);
     if (_bed.hasMatch(line)) {
       draft.bedtime = true;
       draft.frequencies.add(1);
@@ -352,10 +385,27 @@ class FallbackParser {
     return null;
   }
 
-  static String _cleanName(String value) => value
-      .replaceAll(
-          RegExp(r'^\s*(\d+[\.\)]|rx:?|r/)\s*', caseSensitive: false), '')
-      .trim();
+  static String _cleanName(String value) {
+    final name = value
+        .replaceFirst(_label, '')
+        .replaceAll(
+            RegExp(r'^\s*(\d+[\.\)]|rx:?|r/)\s*', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    // OCR may join a header onto the medicine line ("... USE Amoxicillin").
+    // Start the name at a listed medicine if one is present, otherwise keep
+    // at most the last two words of a long run. Never substitutes a name.
+    final words = name.split(' ');
+    if (words.length <= 2) return name;
+    for (var i = 0; i < words.length; i++) {
+      final rest = words.sublist(i).join(' ').toLowerCase();
+      if (MedNames.common
+          .any((known) => rest.startsWith(known.toLowerCase()))) {
+        return words.sublist(i).join(' ');
+      }
+    }
+    return words.length > 3 ? words.sublist(words.length - 2).join(' ') : name;
+  }
 }
 
 class _Draft {

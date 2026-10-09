@@ -73,15 +73,22 @@ How to read it:
       _run(text, null, control: control);
 
   /// Scan: [imagePath] = photo, [ocrText] = text read by ML Kit.
+  /// [alternateText]: ML Kit's own text order, tried by the phone reader
+  /// only if [ocrText] (layout-ordered) yields no medicine.
   static Future<ParseResult> parseImage(String imagePath, String ocrText,
-          {bool ocrFailed = false, ScanControl? control}) =>
-      _run(ocrText, imagePath, ocrFailed: ocrFailed, control: control);
+          {bool ocrFailed = false,
+          ScanControl? control,
+          String? alternateText}) =>
+      _run(ocrText, imagePath,
+          ocrFailed: ocrFailed, control: control, alternateText: alternateText);
 
   static Future<ParseResult> _run(String text, String? imagePath,
-      {bool ocrFailed = false, ScanControl? control}) async {
+      {bool ocrFailed = false,
+      ScanControl? control,
+      String? alternateText}) async {
     control?.check();
     final result = await _interpret(text, imagePath,
-        ocrFailed: ocrFailed, control: control);
+        ocrFailed: ocrFailed, control: control, alternateText: alternateText);
     control?.check(); // A cancelled scan's late result is discarded.
     result.diagnostics = ScanDiagnostics(
       textLength: text.trim().length,
@@ -99,7 +106,9 @@ How to read it:
   }
 
   static Future<ParseResult> _interpret(String text, String? imagePath,
-      {required bool ocrFailed, ScanControl? control}) async {
+      {required bool ocrFailed,
+      ScanControl? control,
+      String? alternateText}) async {
     final hasText = text.trim().isNotEmpty;
     String? note;
     // Phone Only (default) never waits for the laptop.
@@ -163,7 +172,14 @@ How to read it:
                   'with the prescription filling the frame, type the '
                   'prescription, or add the medicine manually.');
     }
-    return _done(FallbackParser.parse(text), srcOffline, note, text);
+    var meds = FallbackParser.parse(text);
+    if (meds.isEmpty &&
+        alternateText != null &&
+        alternateText.trim().isNotEmpty &&
+        alternateText.trim() != text.trim()) {
+      meds = FallbackParser.parse(alternateText);
+    }
+    return _done(meds, srcOffline, note, text);
   }
 
   /// Checks each name (only small typos are corrected) and attaches warnings
@@ -183,11 +199,12 @@ How to read it:
     final writtenMeds =
         ocrText == null ? <Medicine>[] : FallbackParser.parse(ocrText);
     for (final m in meds) {
+      // The name is kept exactly as read; close matches are only offered
+      // as suggestions on the review screen (never applied automatically).
       final c = MedNames.check(m.name);
-      m.name = c.name;
       for (final written in writtenMeds) {
         if (MedNames.check(written.name).name.toLowerCase() !=
-            m.name.toLowerCase()) continue;
+            c.name.toLowerCase()) continue;
         if (m.instructions.isEmpty) m.instructions = written.instructions;
         if (source != srcOffline &&
             written.scheduleKind == ScheduleKind.interval &&
@@ -215,7 +232,7 @@ How to read it:
       }
       final w = [
         genericReviewNote,
-        if (c.warning != null) c.warning!,
+        if (MedNames.reviewNote(m.name) case final nameNote?) nameNote,
         ...m.reviewNotes,
         ...m.validationErrors(),
         if (ocrText != null &&
@@ -229,7 +246,7 @@ How to read it:
     if (source != srcOffline &&
         writtenMeds.any((written) => !meds.any((medicine) =>
             MedNames.check(written.name).name.toLowerCase() ==
-            medicine.name.toLowerCase()))) {
+            MedNames.check(medicine.name).name.toLowerCase()))) {
       note =
           '${note == null ? '' : '$note\n'}The scanned text may include a medication the AI left out. Compare with the whole prescription and add anything missing.';
     }

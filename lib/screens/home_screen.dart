@@ -157,22 +157,30 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     setState(() => _processing = true);
     try {
       final picked = await ImagePicker().pickImage(
-          source: source, imageQuality: 85, maxWidth: 1600, maxHeight: 1600);
+          // Higher resolution and quality keep small printed text legible
+          // for on-device OCR (EXIF orientation is preserved).
+          source: source,
+          imageQuality: 95,
+          maxWidth: 2400,
+          maxHeight: 2400);
       if (picked == null || !mounted) return;
       var text = '';
       final result =
           await _runScan('Reading your prescription', (control) async {
         control.stage('Reading text on this phone (ML Kit)');
         var ocrFailed = false;
+        var raw = '';
         try {
-          text = await Ocr.read(picked.path);
+          final ocr = await Ocr.read(picked.path);
+          text = ocr.text;
+          raw = ocr.raw;
         } catch (_) {
           // Reported separately from "no text"; contents are never logged.
           ocrFailed = true;
         }
         control.check();
         return RxParser.parseImage(picked.path, text,
-            ocrFailed: ocrFailed, control: control);
+            ocrFailed: ocrFailed, control: control, alternateText: raw);
       });
       if (result == null) {
         _snack('Scan cancelled. Nothing was saved.');

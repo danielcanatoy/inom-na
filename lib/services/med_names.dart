@@ -85,6 +85,42 @@ class MedNames {
         "'$input' is not in the app's medication list. Please check the spelling on your prescription.");
   }
 
+  /// Conservative suggestions for a name read by OCR/AI: only close matches
+  /// from this app's short list (not a complete drug database). Empty when
+  /// the name is listed, unknown, or too uncertain. Never applied
+  /// automatically; the user must pick one or type the name.
+  static List<String> suggestions(String name) {
+    final c = check(name);
+    switch (c.status) {
+      case NameStatus.corrected:
+        return [c.name];
+      case NameStatus.uncertain:
+        final lower = name.trim().toLowerCase();
+        final maxD = lower.length < 5 ? 0 : (lower.length <= 9 ? 1 : 2);
+        return [
+          for (final known in common)
+            if (distance(lower, known.toLowerCase()) <= maxD + 1) known
+        ].take(2).toList();
+      case NameStatus.known:
+      case NameStatus.unknown:
+        return const [];
+    }
+  }
+
+  /// Review note for a name, phrased as a question (nothing is changed).
+  static String? reviewNote(String name) {
+    final c = check(name);
+    final input = name.trim();
+    final options = suggestions(name);
+    return switch (c.status) {
+      NameStatus.known => null,
+      NameStatus.corrected || NameStatus.uncertain => "Read as '$input'. "
+          'Did you mean ${options.map((n) => "'$n'").join(' or ')}? Tap a '
+          'suggestion only if it matches your prescription.',
+      NameStatus.unknown => input.isEmpty ? null : c.warning,
+    };
+  }
+
   /// Name only (for older callers).
   static String correct(String name) => check(name).name;
 

@@ -251,7 +251,8 @@ void main() {
 
     testWidgets('no medicine found: recognized text can be corrected and read',
         (tester) async {
-      const ocr = 'SAMPLE – FOR DEMO ONLY\nAmoxicilin 5OO rnq';
+      // Unreadable even after OCR clean-up (no unit, unknown name).
+      const ocr = 'SAMPLE – FOR DEMO ONLY\nAmxcl 5OO';
       final result = RxParser.readOnPhone(ocr);
       expect(result.meds, isEmpty);
       final host =

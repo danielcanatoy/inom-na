@@ -340,6 +340,14 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
+                if (_meds.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 6),
+                    child: Text(
+                        'Add or identify at least one medication to save.',
+                        textAlign: TextAlign.center,
+                        style: textTheme.bodySmall),
+                  ),
                 if (_meds.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 6),
@@ -354,7 +362,8 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                 SizedBox(
                   width: double.infinity,
                   child: FilledButton.icon(
-                      onPressed: _save,
+                      // Nothing to save until a medication exists.
+                      onPressed: _meds.isEmpty ? null : _save,
                       icon: const Icon(Icons.alarm_on),
                       label: const Text(AppStrings.saveAndSetReminders)),
                 ),
@@ -413,6 +422,7 @@ class _MedEditor extends StatefulWidget {
 
 class _MedEditorState extends State<_MedEditor> {
   Medicine get m => widget.med;
+  int _nameVersion = 0;
 
   /// Problems found when the prescription was read. They are shown live in
   /// "Fix before verifying" instead, so they are not repeated as warnings.
@@ -717,7 +727,8 @@ class _MedEditorState extends State<_MedEditor> {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final nameWarning = MedNames.check(m.name).warning;
+    final nameWarning = MedNames.reviewNote(m.name);
+    final nameSuggestions = MedNames.suggestions(m.name);
     final routine = Store.routine;
     final errors = widget.errors;
     final valid = m.validationErrors().isEmpty;
@@ -795,6 +806,23 @@ class _MedEditorState extends State<_MedEditor> {
                 tone: Tone.warning,
                 title: 'Check these details',
                 lines: warnings),
+          if (nameSuggestions.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text('Name suggestions (not confirmed):',
+                style: textTheme.bodySmall),
+            Wrap(spacing: 8, runSpacing: 4, children: [
+              for (final suggestion in nameSuggestions)
+                ActionChip(
+                  avatar: const Icon(Icons.spellcheck, size: 18),
+                  label: Text("Use '$suggestion'"),
+                  // An explicit choice; it also clears any verification.
+                  onPressed: () => _change(() {
+                    m.name = suggestion;
+                    _nameVersion++; // Refresh the name field if open.
+                  }),
+                ),
+            ]),
+          ],
           if (widget.strengthConcerns.isNotEmpty) ...[
             InfoBanner(
               tone: Tone.warning,
@@ -823,6 +851,7 @@ class _MedEditorState extends State<_MedEditor> {
             // ---- Medicine ----
             const SectionHeader('Medicine', icon: Icons.medication_outlined),
             TextFormField(
+                key: ValueKey('name-$_nameVersion'),
                 initialValue: m.name,
                 decoration: _dec('Medication name', 'e.g. Amoxicillin'),
                 textCapitalization: TextCapitalization.words,

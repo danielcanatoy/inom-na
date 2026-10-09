@@ -10,7 +10,7 @@
 - The rebrand is public-facing only. Do **not** rename the Dart package `inom_na`, Android application ID, Kotlin package, method channel `com.inomna/reminders`, notification channel ID `inom_na_doses`, or SharedPreferences keys — renaming them would break installs and saved data.
 - Keep original prescription contents, medicine names, dose instructions, and user-provided medical text intact. Do not automatically translate or reinterpret source directions in a way that changes their medical meaning.
 - Centralize UI strings where practical and use consistent, plain-English terms: **Mark as Taken**, **Upcoming**, **Not Taken**, **Missed**, **I've Verified This**, **Handwritten**, **My Daily Routine**, **Medication**, **Scheduled Time**, **Remind Me Again**.
-- Do not show a UI status, progress count, or control unless supported by real functionality. In particular, missed-dose status and full-screen alarm mode are not implemented yet.
+- Do not show a UI status, progress count, or control unless supported by real functionality. Missed-dose status is implemented as a tracking label only (Phase 4); full-screen alarm mode is not implemented.
 
 ## 2. Hackathon context
 
@@ -48,15 +48,20 @@
 ```text
 Camera / gallery / typed prescription
     -> ML Kit Text Recognition on Android phone (on-device OCR)
-    -> RxParser
-         1. Ollama vision model on laptop over local Wi-Fi/LAN (image + OCR)
-         2. Ollama text model on laptop over LAN (OCR only)
-         3. FallbackParser in Dart on phone (rule-based, no laptop)
-    -> medicine-name checks and uncertainty flags
-    -> ConfirmScreen (mandatory user verification)
-    -> Store (SharedPreferences) + Scheduler (flutter_local_notifications 17.2.4)
-    -> Android local reminders + Home dose checklist
+    -> OcrLayout reading order (raw ML Kit text kept as fallback)
+    -> RxParser, by Store.processingMode
+         Phone Only (DEFAULT): FallbackParser in Dart on phone (rule-based, no laptop)
+         Enhanced AI (optional): 1. Ollama vision model on laptop over LAN (image + OCR)
+                                 2. Ollama text model on laptop (OCR only)
+                                 3. FallbackParser on phone (disclosed fallback)
+    -> MedNames suggestions (chips, never auto-applied) + StrengthCheck flags
+    -> ConfirmScreen "Review Prescription" (compact cards, Verify dialog, Scan details)
+    -> Store (SharedPreferences) + ReminderPlan -> Scheduler/ReminderCoordinator
+       (flutter_local_notifications 17.2.4 + Kotlin daily bridge)
+    -> Android local reminders + follow-ups, Home checklist, Calendar, Medications
 ```
+
+- Phone Only reads clean printed text; it does **not** reliably read handwriting. No cropping/image enhancement exists.
 
 - **Phone-only fallback is not a phone-hosted LLM.** ML Kit OCR executes locally on the phone; the Dart parser is rule-based; Ollama executes on the laptop.
 - Laptop Ollama can run without internet **if the phone and laptop remain connected on the same local network/hotspot**. The phone may send prescription image/OCR text to that laptop; never claim data remains exclusively on the phone in that mode.
@@ -75,7 +80,9 @@ Camera / gallery / typed prescription
 - `lib/services/med_names.dart` — medicine name checks and suggestions.
 - `lib/services/store.dart` — local persistence and settings.
 - `lib/services/scheduler.dart` — reminder registration/cancellation.
-- `lib/services/reminder_planner.dart` — reminder planning (if present; inspect actual repository).
+- `lib/services/reminder_plan.dart` — reminder planning (stable keys, capacity 400, follow-ups, per-medicine skip of unplannable schedules).
+- `lib/services/ocr_layout.dart`, `scan_control.dart`, `strength_check.dart`, `dose_status.dart`, `schedule_edit.dart`, `routine_schedule.dart`; `lib/services/ocr_probe.dart` (debug-only).
+- `lib/screens/calendar_screen.dart`, `edit_schedule_screen.dart` (Edit Medication / Edit Schedule), `medication_details_screen.dart`, `routine_screen.dart`.
 - `lib/screens/home_screen.dart` — today's medication schedule and actions.
 - `lib/screens/confirm_screen.dart` — editable, safety-critical confirmation.
 - `lib/screens/settings_screen.dart` — AI connection, notification permissions/test, about.
@@ -119,7 +126,7 @@ Camera / gallery / typed prescription
 
 - Implemented and code-verified; awaiting real-device review and approval. Do not start Phase 4 without approval.
 - Key files: `lib/models/routine.dart` (routine + `RoutineLink`), `lib/services/routine_schedule.dart` (suggestions, proposals), `lib/services/schedule_edit.dart` (effective date, validation, course-count preservation), `lib/screens/routine_screen.dart`, `edit_schedule_screen.dart`, `medication_details_screen.dart`, `lib/ui/routine_suggestion.dart`.
-- Schedule history: `Medicine.revisions` (backward-compatible optional JSON field). Earlier rules generate doses before each revision's `until`; never rewrite taken keys or past dose times. Clock-time edits apply from midnight (today only if no dose today has passed/been taken); interval edits apply from the edit time and require a full interval after the last earlier dose. Finite courses keep the same remaining dose count.
+- Schedule history: `Medicine.revisions` (backward-compatible optional JSON field). Earlier rules generate doses before each revision's `until`; never rewrite taken keys or past dose times. Clock-time edits apply from now only if today keeps exactly the prescribed dose count (`ScheduleEdit.todayBlockReason`), otherwise from tomorrow (superseded the Phase 3 midnight rule); interval edits apply from the edit time and require a full interval after the last earlier dose. Finite courses keep the same remaining dose count.
 - Routine storage key: `daily_routine_v1`. Picker defaults are never treated as a saved routine.
 
 ### Phase 4 — follow-ups, dose status, intake history, weekly calendar (October 10, 2026, branch `phase4-reminders-tracking`)
@@ -130,7 +137,7 @@ Camera / gallery / typed prescription
 - Follow-ups: `ReminderPlan.build(followUpMinutes:)`, keys `followup:<doseId>` (one-off, finite courses within 7 days) and `followup-daily:<medId>:<HH:mm>` (repeating, ongoing). Primary reminders get capacity first. `cancelDose` removes the dose's follow-up. Settings: `followup_enabled` (default true), `followup_minutes` (10/30/60, default 30).
 - `lib/screens/calendar_screen.dart`, `lib/ui/dose_widgets.dart`. Home Scan button is a fixed bottom bar (no FAB over card actions).
 
-### Phase 4 refinement (October 10, 2026, uncommitted on `phase4-reminders-tracking`)
+### Phase 4 refinement (October 10, 2026, committed on `phase4-reminders-tracking`)
 
 - **Phone Only is the default processing mode** (`Store.processingMode`, key `processing_mode`): ML Kit OCR (bundled model, offline) + rule-based `FallbackParser`; never waits for the laptop. "Enhanced AI" adds laptop Ollama with a disclosed fallback. The Dart parser is NOT an AI model; never describe it as one.
 - Offline "No medicines found" root cause: the rule-based parser dropped whole medicines on common phone-OCR misreads (`5OOmg`, `500 rng`, bracketed brands, strength on the next line), then discarded their directions. Fixed with OCR-tolerant matching (flagged for review, never silent) plus a recovery UI that keeps and re-reads the recognized text.
@@ -138,13 +145,33 @@ Camera / gallery / typed prescription
 - Review screen: compact summary cards, "Edit Details" + "Verify Medication" (confirmation dialog). Today edits apply from now only if today keeps exactly the prescribed dose count (`ScheduleEdit.todayBlockReason`).
 - Navigation: bottom bar Home / Calendar / Medications inside `HomeScreen` (single state owner); Settings holds Prescription Reading, My Daily Routine, notifications.
 
+### Phase 4 scanner investigation (October 10, 2026; latest commit `3589f87`)
+
+- **Full handoff: `docs/PHASE4_HANDOFF.md`.** Last verified: **321 tests passed**, 0 failed, 0 skipped; analyzer 0 errors / 0 warnings / 18 pre-existing infos; debug APK built and installed (data kept).
+- Device evidence (synthetic prints, real ML Kit on the Poco X7 Pro): clean printed text is read almost perfectly; ML Kit's raw order scrambles multi-column layouts, so `OcrLayout` reading order is the primary text (raw is the fallback). Observed misreads: `Amoxicilin`, `I tab` (read as 1 and flagged), `15 mg/5 m` (left incomplete). There is no evidence that higher resolution helps.
+- Enhanced AI sends the original photo to the laptop's vision model; Phone Only depends entirely on OCR text. The user's own prescription still fails in Phone Only; the cause is unmeasured (likely handwriting or photo quality).
+- **Scan details** (Review screen) shows the photo plus raw vs. processed OCR text, and re-reads corrected text. `lib/services/ocr_probe.dart` is a **debug-only** probe for synthetic images (see the handoff for usage). Commit `3589f87` is named "Cropped Image Feature" but **no cropping code exists yet**.
+
+### Latest decision (October 10, 2026), not yet started
+
+- The phone must work **independently of the laptop**. Goal: better recognition of **readable handwritten** prescriptions.
+- **First** investigate on-device document cropping/enhancement before OCR, measured against the current pipeline with synthetic samples.
+- An on-device vision model (e.g. Gemma 3n) may be explored **only as a separate experiment/branch**; measure accuracy, latency, memory and APK size. **Do not integrate an experimental model into the stable app without testing.**
+- Preserve the working scanner, reminders, calendar and mandatory medication verification. No silent auto-correction of names, strengths or frequencies.
+
+### Final Phase 4 verification (October 10, 2026, ~03:20, uncommitted)
+
+- **Reminder isolation fix:** `ReminderPlan.build` now skips a medicine whose schedule fails `scheduleErrors()` or is an unsupported ongoing interval (24 % h != 0), reports it by name in `plan.notice` (shown as the Home banner), and plans every other medicine. `Scheduler._apply(keepMedicineIds:)` leaves the skipped medicine's existing reminders and IDs untouched (including orphan-recovery via `ReminderPlan.medicineIdOfKey`). Records are never deleted or changed.
+- Results: `dart format` 0 changed; analyzer 0 errors / 0 warnings / 18 infos; **324 tests passed** (321 + 3 new regression tests); debug APK built and installed with `adb install -r` (data kept); app relaunched with no crash; `dumpsys alarm` shows 6 IMedsU alarms (registration, not delivery).
+- **Not observed on device:** notification delivery with the app closed, follow-up delivery, reboot recovery. The plugin boot receiver re-registers alarms; on HyperOS Autostart must be ON, otherwise reminders return only when the app is opened.
+
 ### Remaining Phase 1/device risks
 
 - Real HyperOS reminder delivery while locked/backgrounded, after app termination and after reboot.
 - Reminder permission denial/revocation and exact-alarm behavior.
 - Actual ML Kit OCR, printed/handwritten extraction, Ollama LAN connectivity, and accuracy measurements.
 - Existing legacy records may require prescription re-review; avoid overwriting or inventing historic intake timestamps.
-- One malformed stored record may currently block registration of reminders for other medicines; report this transparently and prioritize safe recovery if encountered.
+- ~~One malformed record blocks all reminders~~ — **fixed in final verification** (see below). Duplicate medicine IDs and capacity overflow still block the whole plan by design.
 
 ## 7. Work order and phase boundaries — follow strictly
 
@@ -211,6 +238,9 @@ Camera / gallery / typed prescription
 - Use **synthetic prescriptions labeled “SAMPLE — FOR DEMO ONLY”** and fictional names for tests/demos. Do not recommend taking actual medicine as part of testing.
 - Prefer the smallest reliable change. Run relevant tests and `flutter test`, `flutter analyze`, and a debug Android build when practical. Report command results accurately, including informational lints and skipped checks.
 - Ask before pushing/merging branches, releasing builds, or changing device settings. Never commit secrets.
+- **Never open, pull or view the user's real prescription photos with Claude tools** (that sends medical images off the device). Use synthetic images; the user compares their own photos in the in-app Scan details view.
+- Run `adb` commands with device paths (`/data/...`) from **PowerShell**: Git Bash rewrites them into Windows paths. `run-as com.inomna.inom_na` works on debug builds; never uninstall or clear app data.
+- The OCR probe (`lib/services/ocr_probe.dart`) must stay debug-only, read only developer-placed synthetic files in `code_cache/ocr_probe/`, and delete them after measuring.
 
 ## 9. Demo plan — differentiate two offline modes
 

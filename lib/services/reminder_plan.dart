@@ -62,9 +62,33 @@ class PlannedReminder {
 }
 
 class ReminderPlan {
-  const ReminderPlan(this.reminders, {this.error, this.notice});
+  const ReminderPlan(this.reminders,
+      {this.error, this.notice, this.skipped = const []});
   final List<PlannedReminder> reminders;
   final String? error;
+
+  /// Medicines whose schedule could not be planned (invalid or unsupported).
+  /// They are skipped so other medicines still get reminders; their existing
+  /// reminders are left untouched by the scheduler and they are reported.
+  final List<Medicine> skipped;
+
+  /// Pulls the medicine id out of a reminder key (null if not a medicine key).
+  static String? medicineIdOfKey(String key) {
+    for (final prefix in ['dose:', 'followup:']) {
+      if (key.startsWith(prefix)) {
+        final doseId = key.substring(prefix.length);
+        final bar = doseId.indexOf('|');
+        return bar < 0 ? null : doseId.substring(0, bar);
+      }
+    }
+    for (final prefix in ['daily:', 'followup-daily:']) {
+      if (key.startsWith(prefix) && key.length > prefix.length + 6) {
+        return key.substring(prefix.length, key.length - 6); // ":HH:mm"
+      }
+    }
+    if (key.startsWith('refill:')) return key.substring('refill:'.length);
+    return null;
+  }
 
   /// Non-blocking information, e.g. follow-ups limited by capacity.
   final String? notice;
@@ -84,16 +108,17 @@ class ReminderPlan {
       {int? followUpMinutes}) {
     final result = <PlannedReminder>[];
     final medicineIds = <String>{};
+    final skipped = <Medicine>[];
     for (final medicine in medicines) {
       if (!medicineIds.add(medicine.id)) {
         return const ReminderPlan([],
             error:
                 'Two medications share the same ID. Reminders were not changed.');
       }
+      // One invalid record must not block every other medicine's reminders.
       if (medicine.scheduleErrors().isNotEmpty) {
-        return const ReminderPlan([],
-            error:
-                'A medication schedule is not valid yet. Check its times, frequency and dates before reminders can be set.');
+        skipped.add(medicine);
+        continue;
       }
       if (medicine.isPrn) continue;
       final extra =
@@ -121,9 +146,9 @@ class ReminderPlan {
         final interval = medicine.intervalHours;
         if (medicine.scheduleKind == ScheduleKind.interval &&
             (interval == null || 24 % interval != 0)) {
-          return const ReminderPlan([],
-              error:
-                  'Ongoing reminders for this dose interval are not supported yet. Set an end date. Reminders were not changed.');
+          // Not supported as an ongoing series: skip this medicine only.
+          skipped.add(medicine);
+          continue;
         }
         // Daily repeating series continue while the app is closed, indefinitely.
         // Start after every already-taken occurrence, including an early marking.
@@ -186,20 +211,36 @@ class ReminderPlan {
       }
     }
     String? notice;
+    if (skipped.isNotEmpty) {
+      final names = skipped
+          .map((m) => m.name.trim().isEmpty ? 'a medication' : m.name.trim())
+          .join(', ');
+      notice = 'Reminders could not be updated for: $names. Its schedule '
+          'needs review (open the medicine and use Edit Medication). '
+          'Existing reminders for it were kept, and all other medications '
+          'are scheduled normally.';
+    }
     if (followUpMinutes != null && followUpMinutes > 0) {
       final delay = Duration(minutes: followUpMinutes);
+      final skippedIds = {for (final m in skipped) m.id};
       final followUps = [
-        for (final medicine in medicines) ..._followUps(medicine, now, delay)
+        for (final medicine in medicines)
+          if (!skippedIds.contains(medicine.id))
+            ..._followUps(medicine, now, delay)
       ]..sort((a, b) => a.when.compareTo(b.when));
       final room = maxPending - result.length;
       if (followUps.length > room) {
-        notice = 'Some follow-up reminders could not be set because of the '
-            'reminder limit. Your main medication reminders are not affected.';
+        notice = [
+          if (notice != null) notice,
+          'Some follow-up reminders could not be set because of the '
+              'reminder limit. Your main medication reminders are not '
+              'affected.',
+        ].join('\n');
       }
       result.addAll(followUps.take(room < 0 ? 0 : room));
     }
     result.sort((a, b) => a.when.compareTo(b.when));
-    return ReminderPlan(result, notice: notice);
+    return ReminderPlan(result, notice: notice, skipped: skipped);
   }
 
   static List<PlannedReminder> _followUps(

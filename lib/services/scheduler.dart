@@ -153,7 +153,9 @@ class ReminderCoordinator {
           followUpMinutes: followUpMinutes);
       if (plan.error != null)
         return SchedulerResult(success: false, message: plan.error);
-      final result = await _apply(plan.reminders, replaceAll: true);
+      final result = await _apply(plan.reminders,
+          replaceAll: true,
+          keepMedicineIds: {for (final m in plan.skipped) m.id});
       if (result.success && result.message == null && plan.notice != null) {
         return SchedulerResult(
             success: true, message: plan.notice, exact: result.exact);
@@ -233,7 +235,10 @@ class ReminderCoordinator {
     List<PlannedReminder> desired, {
     required bool replaceAll,
     Set<String> removeKeys = const {},
+    Set<String> keepMedicineIds = const {},
   }) async {
+    // Reminders of medicines that could not be planned are left untouched.
+    bool kept(PlannedReminder r) => keepMedicineIds.contains(r.medicineId);
     final permission = await backend.permissions();
     // Deletion/cancellation must still work when permission was revoked.
     if (desired.isNotEmpty && !permission.notificationsGranted) {
@@ -256,7 +261,7 @@ class ReminderCoordinator {
     final previousRetiring = Set<int>.from(state.retiring);
     final obsolete = <int>{...state.retiring};
     for (final entry in previous.entries) {
-      if (entry.value.key == 'demo:test') continue;
+      if (entry.value.key == 'demo:test' || kept(entry.value)) continue;
       if ((replaceAll || removeKeys.contains(entry.value.key)) &&
           !desiredById.containsKey(entry.key)) {
         obsolete.add(entry.key);
@@ -277,7 +282,9 @@ class ReminderCoordinator {
           final payload =
               jsonDecode(item.payload ?? '') as Map<String, dynamic>;
           managed = payload['version'] == 1;
-          demo = payload['key'] == 'demo:test';
+          demo = payload['key'] == 'demo:test' ||
+              keepMedicineIds
+                  .contains(ReminderPlan.medicineIdOfKey('${payload['key']}'));
         } catch (_) {/* Legacy notifications have no payload. */}
         if (managed && !demo) obsolete.add(item.id);
         if (!state.legacyMigrated &&
@@ -310,8 +317,8 @@ class ReminderCoordinator {
         exact = exact && wasExact;
       }
       if (replaceAll) {
-        state.registered
-            .removeWhere((id, reminder) => reminder.key != 'demo:test');
+        state.registered.removeWhere(
+            (id, reminder) => reminder.key != 'demo:test' && !kept(reminder));
       } else {
         state.registered
             .removeWhere((id, reminder) => removeKeys.contains(reminder.key));

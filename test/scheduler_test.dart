@@ -348,14 +348,46 @@ void main() {
   });
 
   test(
-      'unsupported indefinite interval fails instead of silently ending reminders',
+      'an unplannable medicine is reported and keeps its reminders; others still work',
       () async {
-    final medicine = _medicine('a', maintenance: true)
+    final medicine = _medicine('a', maintenance: true);
+    final other = _medicine('b', maintenance: true, times: ['09:00']);
+    await scheduler.rescheduleAll([medicine, other]);
+    final keptIds = backend.reminders.entries
+        .where((entry) => entry.value.medicineId == 'a')
+        .map((entry) => entry.key)
+        .toSet();
+    expect(keptIds, isNotEmpty);
+    // The record becomes unplannable (ongoing interval not dividing 24 h).
+    medicine
       ..scheduleKind = ScheduleKind.interval
       ..intervalHours = 7;
-    final result = await scheduler.rescheduleAll([medicine]);
-    expect(result.success, isFalse);
-    expect(backend.calls, 0);
+    final result = await scheduler.rescheduleAll([medicine, other]);
+    expect(result.success, isTrue);
+    expect(result.message, contains('Reminders could not be updated'));
+    // Not silently ended: its existing reminders stay registered.
+    expect(backend.canceled.toSet().intersection(keptIds), isEmpty);
+    expect(backend.entries.keys, containsAll(keptIds));
+    expect(backend.reminders.values.any((r) => r.medicineId == 'b'), isTrue);
+  });
+
+  test('one invalid record no longer blocks a new valid medicine', () async {
+    final invalid = _medicine('bad')..scheduleKind = ScheduleKind.unknown;
+    final added = _medicine('new', maintenance: true, times: ['10:00']);
+    final result = await scheduler.rescheduleAll([invalid, added]);
+    expect(result.success, isTrue);
+    expect(result.message, contains('Reminders could not be updated'));
+    expect(backend.reminders.values.where((r) => r.medicineId == 'new'),
+        isNotEmpty);
+    expect(
+        backend.reminders.values.where((r) => r.medicineId == 'bad'), isEmpty);
+    // A restarted coordinator keeps the same IDs for the valid medicine.
+    final ids = Map.of(backend.entries.map((id, e) => MapEntry(id, e.payload)));
+    final calls = backend.calls;
+    await ReminderCoordinator(backend, state, clock: () => _now)
+        .rescheduleAll([invalid, added]);
+    expect(backend.calls, calls);
+    expect(backend.entries.map((id, e) => MapEntry(id, e.payload)), ids);
   });
 
   test(

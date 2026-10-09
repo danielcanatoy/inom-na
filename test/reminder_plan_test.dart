@@ -56,19 +56,39 @@ void main() {
     expect(plan.reminders.map((reminder) => reminder.when.hour), [7, 15, 23]);
   });
 
-  test('unknown schedule and duplicate times return explicit failures', () {
-    expect(
-        ReminderPlan.build([
-          daily('unknown', ['08:00'])..scheduleKind = ScheduleKind.unknown
-        ], now)
-            .error,
-        isNotNull);
-    expect(
-        ReminderPlan.build([
-          daily('duplicate', ['08:00', '08:00'])
-        ], now)
-            .error,
-        isNotNull);
+  test('invalid schedules are skipped and reported; others are still planned',
+      () {
+    final unknown = daily('unknown', ['08:00'])
+      ..scheduleKind = ScheduleKind.unknown
+      ..name = 'Sample Unknown';
+    final duplicate = daily('duplicate', ['08:00', '08:00'])
+      ..name = 'Sample Duplicate';
+    final valid = daily('ok', ['09:00']);
+    final plan = ReminderPlan.build([unknown, duplicate, valid], now);
+    expect(plan.error, isNull);
+    expect(plan.skipped.map((m) => m.id), ['unknown', 'duplicate']);
+    expect(plan.notice, contains('Sample Unknown, Sample Duplicate'));
+    expect(plan.reminders, isNotEmpty);
+    expect(plan.reminders.map((r) => r.medicineId).toSet(), {'ok'});
+  });
+
+  test('duplicate medicine IDs still block the whole plan (unsafe identity)',
+      () {
+    final plan = ReminderPlan.build([
+      daily('same', ['08:00']),
+      daily('same', ['09:00'])
+    ], now);
+    expect(plan.error, isNotNull);
+    expect(plan.reminders, isEmpty);
+  });
+
+  test('medicine id is recovered from every reminder key type', () {
+    expect(ReminderPlan.medicineIdOfKey('dose:m1|2030-01-01 08:00'), 'm1');
+    expect(ReminderPlan.medicineIdOfKey('followup:m1|2030-01-01 08:00'), 'm1');
+    expect(ReminderPlan.medicineIdOfKey('daily:m1:08:00'), 'm1');
+    expect(ReminderPlan.medicineIdOfKey('followup-daily:m1:08:00'), 'm1');
+    expect(ReminderPlan.medicineIdOfKey('refill:m1'), 'm1');
+    expect(ReminderPlan.medicineIdOfKey('demo:test'), isNull);
   });
 
   test(

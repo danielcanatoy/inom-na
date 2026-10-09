@@ -14,21 +14,21 @@ After a doctor's visit, patients forget doses, take them twice, or stop antibiot
 **Target users:** Filipino patients and caregivers, especially seniors and the family members who help them.
 
 ## How it works
-1. Take a photo of a prescription or pharmacy label, choose one from the gallery, or type the prescription.
-2. **On-device OCR** (Google ML Kit) reads the text on the phone.
-3. **Local AI via Ollama** on a laptop on the same Wi-Fi/hotspot (no internet needed):
-   - **Vision model** (`qwen2.5vl:3b`) reads the photo itself — best for handwriting.
-   - Otherwise the **text model** (`qwen2.5:3b`) interprets the OCR text (TID, BID, q8h, PRN, "x 7 days", "#21").
-   - If Ollama cannot be reached, the **offline rule-based reader on the phone** is used.
-   - **Medication-name check** against a list of common PH medicines (on the phone).
-   - The review screen shows which of these read the prescription.
-4. **Review Prescription screen:** the user checks, corrects and verifies every medication. Unclear, missing or invalid details block saving.
+1. Take a photo of a prescription or pharmacy label, choose one from the gallery, or type the prescription. A scan shows its progress (stage and elapsed time) and can be cancelled; a cancelled scan saves nothing.
+2. **Phone Only (default, no laptop or internet):** Google ML Kit OCR reads the text on the phone. The text is put in reading order (rows top to bottom, left to right), then a **rule-based Dart reader** (not an AI model) extracts candidate fields: strength, amount, times per day / q6h / q8h, PRN, "x 7 days", quantity, "ongoing". Unclear characters (e.g. "5OOmg", "I tab") are read and **flagged**, never silently accepted.
+3. **Enhanced AI (optional, Settings → Prescription Reading):** the photo and OCR text are sent over the local Wi-Fi/hotspot to **Ollama on a laptop** — vision model `qwen2.5vl:3b` first, then text model `qwen2.5:3b`. If the laptop cannot be reached, IMedsU says so and uses the phone reader.
+   - **Medication-name suggestions** from a short list of common PH medicines are offered as "Use '…'" chips; names are never auto-replaced.
+   - **Strength check** flags unusually large strengths or a strength that differs from the prescription text; strengths are never changed.
+   - The review screen shows which reader was used.
+4. **Review Prescription screen:** compact cards per medicine, **Edit Details** and **Verify Medication** (explicit confirmation). Unclear, missing or invalid details block verification and saving. **Scan details** shows the photo, the raw and processed OCR text, and what is still missing, and can re-read corrected text. If nothing is identified, the recognized text can be corrected and read again, or the medicine entered manually.
 5. **Offline reminders** for each dose, with a "Mark as Taken" checklist and today's progress.
    - **My Daily Routine** (wake-up, meals, bedtime) suggests reminder times for general daily frequencies. Suggestions are applied only when the user taps "Use These Times"; prescribed clock times and fixed intervals (q6h/q8h) are never replaced, and before/after-meal offsets are never assumed.
    - **Follow-up reminders** (on by default, 10/30/60 minutes, Settings → Notifications): one extra notification for the SAME dose if it is not marked taken; cancelled when marked taken. Never an extra dose. Repeating follow-ups for ongoing medicines; finite courses get follow-ups for the next 7 days, refreshed whenever the app opens.
    - **Dose status:** Upcoming, Taken, Overdue (unconfirmed, under 2 hours), Missed (no confirmation recorded after 2 hours — a tracking label, not proof). New confirmations store the actual time; older records show "time not recorded".
-   - **Medication Calendar:** weekly strip with a chronological timeline per day; late confirmations allowed for past doses.
-   - **Edit Schedule** changes future reminders only. Past doses, taken records and the number of doses in a finite course are kept. Routine changes propose updates for routine-linked medicines and apply only after confirmation.
+   - **Medication Calendar** (bottom navigation: Home / Calendar / Medications): weekly strip, Jump to Date, Go to Today, and a chronological timeline per day; late confirmations allowed for past doses. Viewing dates never changes a medicine.
+   - **Edit Schedule** changes future reminders only. Today's remaining doses can change from now only if today keeps exactly the prescribed number of doses; otherwise the change starts tomorrow. Past doses, taken records and the number of doses in a finite course are kept. Routine changes propose updates for routine-linked medicines and apply only after confirmation.
+   - **Edit Medication** corrects name, strength, amount, schedule type, times, duration, directions and quantity, with renewed verification. The original prescription text is kept unchanged as evidence.
+   - **Reminder isolation:** if one saved medicine's schedule cannot be planned, it is reported by name and its existing reminders are kept; all other medicines are still scheduled.
 6. **Running-low alert** about 3 days before the purchased quantity runs out.
 7. **Dose record** (for example "Marked taken: 19 of 21 planned doses") that can be shown to a doctor.
 
@@ -39,12 +39,14 @@ After a doctor's visit, patients forget doses, take them twice, or stop antibiot
 ## What runs where
 | Part | Where it runs |
 |---|---|
-| Prescription OCR | Phone (Google ML Kit, on-device) |
-| Reading the photo (handwriting) | Laptop on the same Wi-Fi/hotspot (Ollama, `qwen2.5vl:3b`), no internet |
-| Interpreting the prescription text | Laptop on the same Wi-Fi/hotspot (Ollama, `qwen2.5:3b`), no internet |
-| Medication-name check | Phone (Dart) |
-| Backup reader | Phone (rule-based Dart parser) |
-| Reminders, checklist, running-low alert, dose record | Phone (local notifications, local storage) |
+| Prescription OCR | Phone (Google ML Kit, on-device, bundled model) |
+| Phone Only reading (default) | Phone (rule-based Dart reader; not an AI model) |
+| Enhanced AI: reading the photo | Laptop on the same Wi-Fi/hotspot (Ollama, `qwen2.5vl:3b`), optional, no internet |
+| Enhanced AI: interpreting the text | Laptop on the same Wi-Fi/hotspot (Ollama, `qwen2.5:3b`), optional, no internet |
+| Name suggestions, strength checks | Phone (Dart) |
+| Reminders, follow-ups, checklist, calendar, running-low alert, dose record | Phone (local notifications, local storage) |
+
+**Limitations:** Phone Only reads clearly printed text well (see Accuracy) but **does not reliably read handwriting**; use Enhanced AI or correct the text / enter the medicine manually. Automatic cropping or image enhancement is **not implemented**.
 
 ## What requires internet
 Only the first download of Flutter dependencies, OCR resources if needed, and the local Ollama models. There is no cloud service in the core workflow. After setup there are two modes: phone-only (OCR + offline reader + checklist + reminders) and laptop-connected local AI.
@@ -120,17 +122,18 @@ In `<application ...>` add `android:usesCleartextTraffic="true"` (for `http://` 
 ## Test data
 All prescriptions used in testing and demos are **made by the team**, with fake patient and doctor names ("SAMPLE – FOR DEMO ONLY"). No real medical records were used.
 
-## Accuracy *(fill in after testing)*
-Method: see [TEST_PLAN.md](TEST_PLAN.md). Only real results are recorded here.
+## Accuracy (measured results only)
+Method: team-made **synthetic** prescriptions ("SAMPLE / NOT FOR MEDICAL USE") rendered as images on the laptop and read by **real ML Kit on the Poco X7 Pro** (debug-only probe, `lib/services/ocr_probe.dart`), then by the Phone Only reader. These are clean rendered images, **not camera photos**.
 
-| | Printed | Handwritten |
+| | Printed (synthetic rendered images, Phone Only) | Handwritten |
 |---|---|---|
-| Number of sample prescriptions | __ | __ |
-| Reader used (vision / text / offline) | __ | __ |
-| Correct fields (medicine, dose, frequency, days) | __% | __% |
-| Fully correct prescriptions | __ / __ | __ / __ |
-| Corrected on the review screen | __ | __ |
-| Typical reading time | __ s | __ s |
+| Number of sample images | 7 (clean, small print, low resolution, table layout, abbreviated, PRN syrup, clinic header with 2 medicines) | Not measured |
+| Medicines identified | 8 / 8 | Not measured |
+| Medicines with every field correct | 6 / 8 (the other 2: OCR read "Amoxicilin" — a suggestion is offered; "15 mg/5 m" — the dropped "L" is left for the user to complete) | Not measured |
+| False medicines | 0 | Not measured |
+| OCR time on the phone | about 70–180 ms per image (about 1 s for the first scan) | Not measured |
+
+Not yet measured: real camera photos, handwriting, and Enhanced AI (laptop Ollama) accuracy. See also `test/scanner_benchmark_test.dart` (rule-based reader on synthetic text: 72/72 fields).
 
 ## Disclosures
 - **Models:** `qwen2.5:3b` (text) and `qwen2.5vl:3b` (vision) via Ollama on a laptop; Google ML Kit Text Recognition (on-device); a local rule-based fallback parser.

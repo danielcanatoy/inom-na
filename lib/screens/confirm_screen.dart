@@ -13,6 +13,9 @@ import '../services/store.dart';
 import '../ui/routine_suggestion.dart';
 import 'routine_screen.dart';
 
+/// Returned by the review screen when the user wants to scan again or type.
+enum ScanRetry { photo, type }
+
 /// Every prescription field and the resulting schedule must be reviewed.
 class ConfirmScreen extends StatefulWidget {
   const ConfirmScreen({super.key, required this.result, required this.rawText});
@@ -25,7 +28,40 @@ class ConfirmScreen extends StatefulWidget {
 class _ConfirmScreenState extends State<ConfirmScreen> {
   late final List<Medicine> _meds =
       widget.result.meds.map((m) => Medicine.fromJson(m.toJson())).toList();
+  late final Map<String, String> _warnings = {...widget.result.warnings};
   final Set<String> _verified = {};
+
+  /// Medicines showing the full editor. One medicine starts expanded;
+  /// several start as compact summaries.
+  late final Set<String> _expanded = {if (_meds.length == 1) _meds.single.id};
+
+  /// Editable copy of the recognized text for re-reading on this phone.
+  /// The original [ConfirmScreen.rawText] is kept unchanged as evidence.
+  late final _textCtrl = TextEditingController(text: widget.rawText);
+
+  @override
+  void dispose() {
+    _textCtrl.dispose();
+    super.dispose();
+  }
+
+  void _readTextAgain() {
+    final result = RxParser.readOnPhone(_textCtrl.text);
+    if (result.meds.isEmpty) {
+      _message('No medicine was identified. Add it manually, or correct the '
+          'text and try again.');
+      return;
+    }
+    setState(() {
+      for (final m in result.meds) {
+        _meds.add(m);
+        _expanded.add(m.id);
+        final warning = result.warnings[m.id];
+        if (warning != null) _warnings[m.id] = warning;
+      }
+    });
+  }
+
   final Set<String> _startReviewed = {};
 
   /// Strength the user confirmed comparing (per medicine). Editing the
@@ -62,13 +98,33 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
               'Correct the times using your prescription before verifying.',
       ];
 
-  void _verify(Medicine m) {
+  Future<void> _verify(Medicine m) async {
     final errors = _errors(m);
     if (errors.isNotEmpty) {
+      setState(() => _expanded.add(m.id));
       _message(errors.join('\n'));
       return;
     }
-    setState(() => _verified.add(m.id));
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (c) => AlertDialog(
+        title: Text('Verify ${'${m.name} ${m.dose}'.trim()}?'),
+        content: const Text('Confirm that the name, strength, amount, '
+            'schedule, duration and directions match your prescription.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(c, false),
+              child: const Text(AppStrings.cancel)),
+          FilledButton(
+              onPressed: () => Navigator.pop(c, true),
+              child: const Text(AppStrings.iveVerifiedThis)),
+        ],
+      ),
+    );
+    // Re-check: nothing may have changed while the dialog was open.
+    if (confirmed == true && mounted && _errors(m).isEmpty) {
+      setState(() => _verified.add(m.id));
+    }
   }
 
   void _save() {
@@ -85,10 +141,66 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
         return;
       }
     }
+    // Keep the prescription text as read (evidence), separate from the
+    // editable directions.
+    final source = widget.rawText.trim();
+    for (final m in _meds) {
+      if (source.isNotEmpty) m.sourceText ??= widget.rawText;
+    }
     Navigator.pop(context, _meds);
   }
 
   bool get _usedLaptopAi => widget.result.source != RxParser.srcOffline;
+
+  /// Recovery when nothing was identified: keep and show the recognized
+  /// text, and offer retake, typing, re-reading and manual entry.
+  List<Widget> _noMedicines(TextTheme textTheme) {
+    final hasText = widget.rawText.trim().isNotEmpty;
+    return [
+      EmptyState(
+        title: hasText ? 'No medicine identified yet' : 'No text found',
+        message: hasText
+            ? 'Text was recognized, but no medicine could be identified '
+                'automatically. Correct the text below and read it again, '
+                'or add the medicine manually.'
+            : (widget.result.note ??
+                'No text could be read. Retake the photo or type the '
+                    'prescription.'),
+        leading:
+            const Icon(Icons.manage_search, size: 56, color: AppColors.primary),
+      ),
+      if (hasText) ...[
+        TextField(
+          controller: _textCtrl,
+          minLines: 4,
+          maxLines: 12,
+          decoration: const InputDecoration(
+            labelText: 'Recognized text (you can correct it)',
+            alignLabelWithHint: true,
+          ),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: FilledButton.icon(
+              onPressed: _readTextAgain,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Read Text Again')),
+        ),
+      ],
+      const SizedBox(height: 8),
+      Wrap(spacing: 8, runSpacing: 8, children: [
+        OutlinedButton.icon(
+            onPressed: () => Navigator.pop(context, ScanRetry.photo),
+            icon: const Icon(Icons.photo_camera_outlined),
+            label: const Text('Retake Photo')),
+        OutlinedButton.icon(
+            onPressed: () => Navigator.pop(context, ScanRetry.type),
+            icon: const Icon(Icons.keyboard_outlined),
+            label: const Text(AppStrings.typePrescription)),
+      ]),
+    ];
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -123,6 +235,12 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                             child: Text(widget.result.note!,
                                 style: textTheme.bodyMedium),
                           ),
+                        if (widget.result.diagnostics != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(widget.result.diagnostics!.summary,
+                                style: textTheme.bodySmall),
+                          ),
                       ]),
                 ),
               ]),
@@ -155,12 +273,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                       )),
                 ]),
           ),
-          if (_meds.isEmpty)
-            const EmptyState(
-              title: 'No medications found',
-              message: 'Try again with a clearer photo, type the '
-                  'prescription, or add a medication below.',
-            ),
+          if (_meds.isEmpty) ..._noMedicines(textTheme),
           if (_meds.isNotEmpty)
             SectionHeader(
                 '${_meds.length} ${_meds.length == 1 ? "medication" : "medications"} found',
@@ -170,7 +283,12 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
               key: ValueKey(m.id),
               index: index + 1,
               med: m,
-              warning: widget.result.warnings[m.id],
+              warning: _warnings[m.id],
+              expanded: _expanded.contains(m.id),
+              onToggleDetails: () => setState(() => _expanded.contains(m.id)
+                  ? _expanded.remove(m.id)
+                  : _expanded.add(m.id)),
+              onUnverify: () => setState(() => _verified.remove(m.id)),
               verified: _verified.contains(m.id),
               startReviewed: _startReviewed.contains(m.id),
               errors: _errors(m),
@@ -198,10 +316,15 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
             ),
           const SizedBox(height: 8),
           OutlinedButton.icon(
-              onPressed: () => setState(
-                  () => _meds.add(Medicine(id: Medicine.newId(), name: ''))),
+              onPressed: () => setState(() {
+                    final blank = Medicine(id: Medicine.newId(), name: '');
+                    _meds.add(blank);
+                    _expanded.add(blank.id);
+                  }),
               icon: const Icon(Icons.add),
-              label: const Text(AppStrings.addMedication)),
+              label: Text(_meds.isEmpty
+                  ? 'Add Medicine Manually'
+                  : AppStrings.addMedication)),
         ],
       ),
       // Raised by the keyboard height so Save stays reachable while typing;
@@ -262,8 +385,14 @@ class _MedEditor extends StatefulWidget {
     required this.strengthConcerns,
     required this.strengthChecked,
     required this.onStrengthChecked,
+    required this.expanded,
+    required this.onToggleDetails,
+    required this.onUnverify,
     this.warning,
   });
+  final bool expanded;
+  final VoidCallback onToggleDetails;
+  final VoidCallback onUnverify;
   final String rawText;
   final List<String> strengthConcerns;
   final bool strengthChecked;
@@ -537,6 +666,54 @@ class _MedEditorState extends State<_MedEditor> {
     ];
   }
 
+  String _scheduleSummary() => switch (m.scheduleKind) {
+        ScheduleKind.interval => m.intervalHours == null
+            ? 'Fixed interval (hours missing)'
+            : 'Every ${m.intervalHours} hours',
+        ScheduleKind.daily => m.frequencyPerDay == null
+            ? 'Times per day (number missing)'
+            : m.frequencyPerDay == 1
+                ? 'Once a day'
+                : '${m.frequencyPerDay} times a day',
+        ScheduleKind.explicit => 'At the written clock times',
+        ScheduleKind.prn => 'As needed (no reminders)',
+        ScheduleKind.unknown => 'Not clear yet',
+      };
+
+  String _durationSummary() => switch (_duration) {
+        _DurationChoice.days =>
+          m.days == null ? 'Number of days missing' : 'For ${m.days} days',
+        _DurationChoice.end =>
+          m.end == null ? 'End date missing' : 'Until ${Fmt.dateTime(m.end!)}',
+        _DurationChoice.maintenance => 'Ongoing, no end date',
+        _DurationChoice.unknown => 'Not clear yet',
+      };
+
+  String _timesSummary() {
+    if (m.scheduleKind == ScheduleKind.interval) {
+      final pattern = _intervalPattern();
+      final first = widget.startReviewed
+          ? 'First dose ${Fmt.dateTime(m.start)}'
+          : 'First dose not confirmed';
+      return pattern.isEmpty ? first : '$first · ${pattern.join(', ')}';
+    }
+    if (m.scheduleKind == ScheduleKind.prn) return 'None';
+    return m.times.isEmpty ? 'None yet' : m.times.map(Fmt.clock).join(', ');
+  }
+
+  Widget _summaryRow(TextTheme textTheme, String label, String value) =>
+      Padding(
+        padding: const EdgeInsets.only(top: 4),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          SizedBox(
+              width: 112,
+              child: Text(label,
+                  style: textTheme.bodySmall
+                      ?.copyWith(color: AppColors.textSecondary))),
+          Expanded(child: Text(value, style: textTheme.bodyMedium)),
+        ]),
+      );
+
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
@@ -568,6 +745,7 @@ class _MedEditorState extends State<_MedEditor> {
         : errors.isEmpty
             ? (AppStrings.readyToVerify, Tone.info)
             : ('${AppStrings.needsAttention} (${errors.length})', Tone.warning);
+    final title = '${m.name} ${m.dose}'.trim();
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
@@ -578,44 +756,45 @@ class _MedEditorState extends State<_MedEditor> {
             width: widget.verified ? 2 : 1),
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Expanded(
-              child: Wrap(
-                spacing: 10,
-                runSpacing: 6,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  Text('${AppStrings.medication} ${widget.index}',
-                      style: textTheme.titleMedium),
-                  StatusBadge(label: statusLabel, tone: statusTone),
-                ],
-              ),
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${AppStrings.medication} ${widget.index}',
+                        style: textTheme.bodySmall),
+                    Text(title.isEmpty ? '(name missing)' : title,
+                        style: textTheme.titleMedium),
+                    const SizedBox(height: 4),
+                    StatusBadge(label: statusLabel, tone: statusTone),
+                  ]),
             ),
             IconButton(
                 tooltip: 'Remove this medication',
                 onPressed: widget.onRemove,
                 icon: const Icon(Icons.close)),
           ]),
+
+          // ---- Compact summary (always visible) ----
+          _summaryRow(textTheme, 'Amount per dose',
+              m.qtyPerIntake > 0 ? m.qtyLabel : 'Missing'),
+          _summaryRow(textTheme, 'Schedule', _scheduleSummary()),
+          _summaryRow(textTheme, 'Duration', _durationSummary()),
+          _summaryRow(
+              textTheme,
+              m.scheduleKind == ScheduleKind.interval ? 'Doses' : 'Times',
+              _timesSummary()),
+          if (lastDose != null)
+            _summaryRow(textTheme, 'Last dose', Fmt.dateTime(lastDose)),
+
+          // Serious warnings stay visible even when details are hidden.
           if (warnings.isNotEmpty)
             InfoBanner(
                 tone: Tone.warning,
                 title: 'Check these details',
                 lines: warnings),
-
-          // ---- Medicine ----
-          const SectionHeader('Medicine', icon: Icons.medication_outlined),
-          TextFormField(
-              initialValue: m.name,
-              decoration: _dec('Medication name', 'e.g. Amoxicillin'),
-              textCapitalization: TextCapitalization.words,
-              onChanged: (v) => _change(() => m.name = v.trim())),
-          const SizedBox(height: 12),
-          TextFormField(
-              initialValue: m.dose,
-              decoration: _dec('Strength / dose', 'e.g. 500 mg'),
-              onChanged: (v) => _change(() => m.dose = v.trim())),
           if (widget.strengthConcerns.isNotEmpty) ...[
             InfoBanner(
               tone: Tone.warning,
@@ -636,217 +815,236 @@ class _MedEditorState extends State<_MedEditor> {
                   'confirmed by my pharmacist.'),
             ),
           ],
-          const SizedBox(height: 12),
-          TextFormField(
-              initialValue: m.qtyPerIntake > 0 ? m.qtyLabel : '',
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
-              decoration: _dec('Amount per dose', 'e.g. 1 or 0.5',
-                  'Number of tablets, capsules or mL each time.'),
-              onChanged: (v) =>
-                  _change(() => m.qtyPerIntake = double.tryParse(v) ?? 0)),
-
-          // ---- Schedule ----
-          const SectionHeader('Schedule', icon: Icons.schedule),
-          _dropdown<ScheduleKind>(
-            value: m.scheduleKind,
-            label: 'Schedule type (as prescribed)',
-            items: const [
-              (ScheduleKind.unknown, 'Not clear yet'),
-              (ScheduleKind.daily, 'Times per day (OD/BID/TID/QID)'),
-              (ScheduleKind.interval, 'Exact interval (q6h/q8h)'),
-              (ScheduleKind.explicit, 'Written clock times'),
-              (ScheduleKind.prn, 'As needed (PRN, no reminders)'),
-            ],
-            onChanged: (kind) => _change(() {
-              m.scheduleKind = kind;
-              m.routineLink = null;
-            }),
-          ),
-          const SizedBox(height: 12),
-          if (m.scheduleKind == ScheduleKind.interval)
-            ..._intervalSection(textTheme, routine),
-          if (m.scheduleKind == ScheduleKind.daily) ...[
-            TextFormField(
-                key: const ValueKey('daily-frequency'),
-                initialValue: m.frequencyPerDay?.toString() ?? '',
-                keyboardType: TextInputType.number,
-                decoration: _dec('Times per day'),
-                onChanged: (v) => _change(() {
-                      m.frequencyPerDay = int.tryParse(v);
-                      m.routineLink = null;
-                    })),
-            const SizedBox(height: 8),
-            ScheduleBasisBadge(m),
-            const SizedBox(height: 6),
-            Text(
-                m.routineLink != null
-                    ? 'Reminder times from My Daily Routine (not part of '
-                        'your prescription).'
-                    : 'Suggested reminder times. Adjust them to match your '
-                        'prescription.',
-                style: textTheme.bodySmall),
-            const SizedBox(height: 6),
-            _timeChips(addLabel: 'Add Reminder Time', canAdd: true),
-            RoutineSuggestionPanel(
-              key: ValueKey('routine-${m.frequencyPerDay}'),
-              medicine: m,
-              routine: routine,
-              onApply: (times, link) => _change(() {
-                m.times = [...times];
-                m.routineLink = link;
-              }),
-              onSetUpRoutine: routine == null ? _setUpRoutine : null,
-            ),
-          ],
-          if (m.scheduleKind == ScheduleKind.explicit) ...[
-            ScheduleBasisBadge(m),
-            const SizedBox(height: 6),
-            Text('Clock times written on the prescription. Compare each one.',
-                style: textTheme.bodySmall),
-            const SizedBox(height: 6),
-            _timeChips(addLabel: 'Add Written Time', canAdd: true),
-          ],
-          if (m.scheduleKind != ScheduleKind.interval) ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                  onPressed: _pickStart,
-                  icon: const Icon(Icons.event_outlined),
-                  label: Text('Start: ${Fmt.dateTime(m.start)}')),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text('Reminders begin from this date and time.',
-                  style: textTheme.bodySmall),
-            ),
-          ],
-
-          // ---- Duration ----
-          const SectionHeader('Duration', icon: Icons.date_range_outlined),
-          _dropdown<_DurationChoice>(
-            value: _duration,
-            label: 'How long to take it (as prescribed)',
-            items: const [
-              (_DurationChoice.unknown, 'Not clear yet'),
-              (_DurationChoice.days, 'For a number of days'),
-              (_DurationChoice.end, 'Until a specific date'),
-              (
-                _DurationChoice.maintenance,
-                'Ongoing, no end date (maintenance)'
-              ),
-            ],
-            onChanged: (choice) => _change(() {
-              _duration = choice;
-              if (choice != _DurationChoice.days) m.days = null;
-              if (choice != _DurationChoice.end) m.end = null;
-              m.durationConfirmed = choice == _DurationChoice.maintenance ||
-                  (choice == _DurationChoice.days &&
-                      m.days != null &&
-                      m.days! > 0) ||
-                  (choice == _DurationChoice.end && m.end != null);
-            }),
-          ),
-          if (_duration == _DurationChoice.days)
-            Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: TextFormField(
-                    key: const ValueKey('duration-days'),
-                    initialValue: m.days?.toString() ?? '',
-                    keyboardType: TextInputType.number,
-                    decoration: _dec('How many days', 'e.g. 7',
-                        'Counted from the first dose or start time.'),
-                    onChanged: (v) => _change(() {
-                          m.days = int.tryParse(v);
-                          m.end = null;
-                          m.durationConfirmed = m.days != null && m.days! > 0;
-                        }))),
-          if (_duration == _DurationChoice.end)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                    onPressed: _pickEnd,
-                    icon: const Icon(Icons.event_busy_outlined),
-                    label: Text(m.end == null
-                        ? 'Choose the end date and time'
-                        : 'Ends: ${Fmt.dateTime(m.end!)} (no doses from then)')),
-              ),
-            ),
-          if (_duration == _DurationChoice.maintenance)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                  'Reminders continue every day until you edit or delete this '
-                  'medicine. Choose this only if your prescription says to '
-                  'continue.',
-                  style: textTheme.bodySmall),
-            ),
-          if (lastDose != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text('Last dose: ${Fmt.dateTime(lastDose)}',
-                  style: textTheme.bodyMedium
-                      ?.copyWith(fontWeight: FontWeight.w600)),
-            ),
-
-          // ---- Other details ----
-          const SectionHeader('Other details', icon: Icons.notes_outlined),
-          TextFormField(
-              initialValue: m.stock?.toString() ?? '',
-              keyboardType: TextInputType.number,
-              decoration: _dec('Quantity bought (optional)', 'e.g. 21',
-                  'Used for the running-low reminder.'),
-              onChanged: (v) => _change(() => m.stock = int.tryParse(v))),
-          const SizedBox(height: 12),
-          TextFormField(
-              initialValue: m.instructions,
-              maxLines: null,
-              decoration: _dec(
-                  'Directions as written', null, 'Keep the original wording.'),
-              onChanged: (v) => _change(() => m.instructions = v.trim())),
-
-          // ---- Preview ----
-          if (preview.isNotEmpty) ...[
-            SectionHeader(
-                provisional
-                    ? 'Schedule preview (not confirmed yet)'
-                    : 'Schedule preview',
-                icon: Icons.event_note_outlined,
-                subtitle: provisional
-                    ? 'This becomes your schedule only after you verify it.'
-                    : 'First doses from the start'),
-            for (final dose in preview.take(8))
-              Padding(
-                padding: const EdgeInsets.only(bottom: 2),
-                child: Text('•  ${Fmt.dateTime(dose)}',
-                    style: textTheme.bodyMedium?.copyWith(
-                        color: provisional ? AppColors.textSecondary : null)),
-              ),
-          ],
-
-          // ---- Verification ----
-          const SectionHeader('Verification', icon: Icons.verified_outlined),
           if (errors.isNotEmpty)
             InfoBanner(
                 tone: Tone.error, title: 'Fix before verifying', lines: errors),
-          CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              value: widget.verified,
-              title: Text(AppStrings.iveVerifiedThis,
-                  style: textTheme.titleMedium),
-              subtitle: const Text('Name, strength, amount, schedule, '
-                  'duration and directions match my prescription.'),
-              onChanged: (checked) {
-                if (checked == true) {
-                  widget.onVerify();
-                } else {
-                  widget.onChanged();
-                }
+
+          if (widget.expanded) ...[
+            // ---- Medicine ----
+            const SectionHeader('Medicine', icon: Icons.medication_outlined),
+            TextFormField(
+                initialValue: m.name,
+                decoration: _dec('Medication name', 'e.g. Amoxicillin'),
+                textCapitalization: TextCapitalization.words,
+                onChanged: (v) => _change(() => m.name = v.trim())),
+            const SizedBox(height: 12),
+            TextFormField(
+                initialValue: m.dose,
+                decoration: _dec('Strength / dose', 'e.g. 500 mg'),
+                onChanged: (v) => _change(() => m.dose = v.trim())),
+            const SizedBox(height: 12),
+            TextFormField(
+                initialValue: m.qtyPerIntake > 0 ? m.qtyLabel : '',
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration: _dec('Amount per dose', 'e.g. 1 or 0.5',
+                    'Number of tablets, capsules or mL each time.'),
+                onChanged: (v) =>
+                    _change(() => m.qtyPerIntake = double.tryParse(v) ?? 0)),
+
+            // ---- Schedule ----
+            const SectionHeader('Schedule', icon: Icons.schedule),
+            _dropdown<ScheduleKind>(
+              value: m.scheduleKind,
+              label: 'Schedule type (as prescribed)',
+              items: const [
+                (ScheduleKind.unknown, 'Not clear yet'),
+                (ScheduleKind.daily, 'Times per day (OD/BID/TID/QID)'),
+                (ScheduleKind.interval, 'Exact interval (q6h/q8h)'),
+                (ScheduleKind.explicit, 'Written clock times'),
+                (ScheduleKind.prn, 'As needed (PRN, no reminders)'),
+              ],
+              onChanged: (kind) => _change(() {
+                m.scheduleKind = kind;
+                m.routineLink = null;
               }),
+            ),
+            const SizedBox(height: 12),
+            if (m.scheduleKind == ScheduleKind.interval)
+              ..._intervalSection(textTheme, routine),
+            if (m.scheduleKind == ScheduleKind.daily) ...[
+              TextFormField(
+                  key: const ValueKey('daily-frequency'),
+                  initialValue: m.frequencyPerDay?.toString() ?? '',
+                  keyboardType: TextInputType.number,
+                  decoration: _dec('Times per day'),
+                  onChanged: (v) => _change(() {
+                        m.frequencyPerDay = int.tryParse(v);
+                        m.routineLink = null;
+                      })),
+              const SizedBox(height: 8),
+              ScheduleBasisBadge(m),
+              const SizedBox(height: 6),
+              Text(
+                  m.routineLink != null
+                      ? 'Dose times from My Daily Routine (not part of your '
+                          'prescription). Tap a time to edit it.'
+                      : 'Suggested dose times. Tap a time to edit it to match '
+                          'your prescription. The number of times must match '
+                          'the times per day.',
+                  style: textTheme.bodySmall),
+              const SizedBox(height: 6),
+              _timeChips(
+                  addLabel: 'Add Dose Time',
+                  canAdd: m.times.length < (m.frequencyPerDay ?? 0)),
+              RoutineSuggestionPanel(
+                key: ValueKey('routine-${m.frequencyPerDay}'),
+                medicine: m,
+                routine: routine,
+                onApply: (times, link) => _change(() {
+                  m.times = [...times];
+                  m.routineLink = link;
+                }),
+                onSetUpRoutine: routine == null ? _setUpRoutine : null,
+              ),
+            ],
+            if (m.scheduleKind == ScheduleKind.explicit) ...[
+              ScheduleBasisBadge(m),
+              const SizedBox(height: 6),
+              Text('Clock times written on the prescription. Compare each one.',
+                  style: textTheme.bodySmall),
+              const SizedBox(height: 6),
+              _timeChips(addLabel: 'Add Written Time', canAdd: true),
+            ],
+            if (m.scheduleKind != ScheduleKind.interval) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                    onPressed: _pickStart,
+                    icon: const Icon(Icons.event_outlined),
+                    label: Text('Start: ${Fmt.dateTime(m.start)}')),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text('Reminders begin from this date and time.',
+                    style: textTheme.bodySmall),
+              ),
+            ],
+
+            // ---- Duration ----
+            const SectionHeader('Duration', icon: Icons.date_range_outlined),
+            _dropdown<_DurationChoice>(
+              value: _duration,
+              label: 'How long to take it (as prescribed)',
+              items: const [
+                (_DurationChoice.unknown, 'Not clear yet'),
+                (_DurationChoice.days, 'For a number of days'),
+                (_DurationChoice.end, 'Until a specific date'),
+                (
+                  _DurationChoice.maintenance,
+                  'Ongoing, no end date (maintenance)'
+                ),
+              ],
+              onChanged: (choice) => _change(() {
+                _duration = choice;
+                if (choice != _DurationChoice.days) m.days = null;
+                if (choice != _DurationChoice.end) m.end = null;
+                m.durationConfirmed = choice == _DurationChoice.maintenance ||
+                    (choice == _DurationChoice.days &&
+                        m.days != null &&
+                        m.days! > 0) ||
+                    (choice == _DurationChoice.end && m.end != null);
+              }),
+            ),
+            if (_duration == _DurationChoice.days)
+              Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: TextFormField(
+                      key: const ValueKey('duration-days'),
+                      initialValue: m.days?.toString() ?? '',
+                      keyboardType: TextInputType.number,
+                      decoration: _dec('How many days', 'e.g. 7',
+                          'Counted from the first dose or start time.'),
+                      onChanged: (v) => _change(() {
+                            m.days = int.tryParse(v);
+                            m.end = null;
+                            m.durationConfirmed = m.days != null && m.days! > 0;
+                          }))),
+            if (_duration == _DurationChoice.end)
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                      onPressed: _pickEnd,
+                      icon: const Icon(Icons.event_busy_outlined),
+                      label: Text(m.end == null
+                          ? 'Choose the end date and time'
+                          : 'Ends: ${Fmt.dateTime(m.end!)} (no doses from then)')),
+                ),
+              ),
+            if (_duration == _DurationChoice.maintenance)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                    'Reminders continue until you change or stop this '
+                    'schedule. Choose this only if your prescription says '
+                    'to continue.',
+                    style: textTheme.bodySmall),
+              ),
+            if (lastDose != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text('Last dose: ${Fmt.dateTime(lastDose)}',
+                    style: textTheme.bodyMedium
+                        ?.copyWith(fontWeight: FontWeight.w600)),
+              ),
+
+            // ---- Other details ----
+            const SectionHeader('Other details', icon: Icons.notes_outlined),
+            TextFormField(
+                initialValue: m.stock?.toString() ?? '',
+                keyboardType: TextInputType.number,
+                decoration: _dec('Quantity bought (optional)', 'e.g. 21',
+                    'Used for the running-low reminder.'),
+                onChanged: (v) => _change(() => m.stock = int.tryParse(v))),
+            const SizedBox(height: 12),
+            TextFormField(
+                initialValue: m.instructions,
+                maxLines: null,
+                decoration: _dec('Directions as written', null,
+                    'Keep the original wording.'),
+                onChanged: (v) => _change(() => m.instructions = v.trim())),
+
+            // ---- Preview ----
+            if (preview.isNotEmpty) ...[
+              SectionHeader(
+                  provisional
+                      ? 'Schedule preview (not confirmed yet)'
+                      : 'Schedule preview',
+                  icon: Icons.event_note_outlined,
+                  subtitle: provisional
+                      ? 'This becomes your schedule only after you verify it.'
+                      : 'First doses from the start'),
+              for (final dose in preview.take(8))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text('•  ${Fmt.dateTime(dose)}',
+                      style: textTheme.bodyMedium?.copyWith(
+                          color: provisional ? AppColors.textSecondary : null)),
+                ),
+            ],
+          ],
+
+          // ---- Actions ----
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            OutlinedButton.icon(
+                onPressed: widget.onToggleDetails,
+                icon: Icon(
+                    widget.expanded ? Icons.expand_less : Icons.edit_outlined),
+                label: Text(widget.expanded ? 'Hide Details' : 'Edit Details')),
+            widget.verified
+                ? OutlinedButton.icon(
+                    onPressed: widget.onUnverify,
+                    icon: const Icon(Icons.undo),
+                    label: const Text('Undo Verification'))
+                : FilledButton.icon(
+                    onPressed: widget.onVerify,
+                    icon: const Icon(Icons.verified_outlined),
+                    label: const Text('Verify Medication')),
+          ]),
         ]),
       ),
     );

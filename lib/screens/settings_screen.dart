@@ -9,7 +9,10 @@ import '../ui/brand.dart';
 import '../ui/components.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({super.key, this.onOpenRoutine});
+
+  /// Opens My Daily Routine (owned by Home, which saves medicine updates).
+  final Future<void> Function()? onOpenRoutine;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -26,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _permissionsChecked = false;
   String? _reminderResult;
   bool _reminderBusy = false;
+  ProcessingMode _mode = Store.processingMode;
   bool _followEnabled = Store.followUpEnabled;
   int _followMinutes = Store.followUpMinutes;
 
@@ -193,6 +197,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
           children: [
+            // ---- Prescription reading ----
+            const SectionHeader('Prescription Reading',
+                icon: Icons.document_scanner_outlined,
+                subtitle: 'How scanned or typed prescriptions are read'),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SegmentedButton<ProcessingMode>(
+                        segments: const [
+                          ButtonSegment(
+                              value: ProcessingMode.phoneOnly,
+                              icon: Icon(Icons.phone_android_outlined),
+                              label: Text('Phone Only')),
+                          ButtonSegment(
+                              value: ProcessingMode.enhanced,
+                              icon: Icon(Icons.laptop_chromebook_outlined),
+                              label: Text('Enhanced AI')),
+                        ],
+                        selected: {_mode},
+                        onSelectionChanged: (value) async {
+                          final mode = value.first;
+                          setState(() => _mode = mode);
+                          try {
+                            await Store.setProcessingMode(mode);
+                          } catch (_) {
+                            if (mounted) {
+                              setState(() => _mode = Store.processingMode);
+                            }
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                          _mode == ProcessingMode.phoneOnly
+                              ? 'Phone Only (default): text is recognized on '
+                                  "this phone (Google ML Kit) and read by this "
+                                  "phone's rule-based reader. No laptop, "
+                                  'internet or AI model is needed.'
+                              : 'Enhanced AI: also uses the Ollama AI on your '
+                                  'laptop when it can be reached on the same '
+                                  "Wi-Fi. If it can't, IMedsU tells you and "
+                                  "uses this phone's rule-based reader "
+                                  'instead.',
+                          style: textTheme.bodyMedium),
+                    ]),
+              ),
+            ),
+
+            // ---- Daily routine ----
+            if (widget.onOpenRoutine != null) ...[
+              const SectionHeader('My Daily Routine',
+                  icon: Icons.wb_twilight,
+                  subtitle: 'Used only to suggest reminder times'),
+              Card(
+                child: ListTile(
+                  leading: const Icon(Icons.wb_twilight),
+                  title: Text(Store.routine == null
+                      ? 'Set up your daily routine'
+                      : 'Edit your daily routine'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () async {
+                    await widget.onOpenRoutine!();
+                    if (mounted) setState(() {});
+                  },
+                ),
+              ),
+            ],
+
             // ---- AI connection ----
             const SectionHeader('AI Connection',
                 icon: Icons.laptop_chromebook_outlined,

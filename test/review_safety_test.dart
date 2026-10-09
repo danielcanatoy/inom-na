@@ -86,6 +86,21 @@ Widget review(List<Medicine> meds,
         result: ParseResult(meds, RxParser.srcOffline, null, warnings),
         rawText: raw);
 
+/// Taps "Verify Medication" and confirms the dialog when it appears.
+Future<void> verifyMedication(WidgetTester tester) async {
+  final button = find.text('Verify Medication').last;
+  await tester.ensureVisible(button);
+  await tester.pump();
+  await tester.tap(button);
+  await tester.pumpAndSettle();
+  final confirm = find.descendant(
+      of: find.byType(AlertDialog), matching: find.text("I've Verified This"));
+  if (confirm.evaluate().isNotEmpty) {
+    await tester.tap(confirm);
+    await tester.pumpAndSettle();
+  }
+}
+
 void main() {
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -142,7 +157,7 @@ void main() {
       expect(find.text('Add Reminder Time'), findsNothing);
       expect(find.text('Schedule preview (not confirmed yet)'), findsOneWidget);
       // Verifying is blocked while the first dose is only a suggestion.
-      await tapText(tester, AppStrings.iveVerifiedThis);
+      await verifyMedication(tester);
       expect(find.text(AppStrings.verified), findsNothing);
 
       await tapText(tester, 'First dose at 8:00 AM');
@@ -152,7 +167,7 @@ void main() {
           find.text('Every 8 hours: 8:00 AM, 4:00 PM, 12:00 AM, '
               'repeating daily.'),
           findsOneWidget);
-      await tapText(tester, AppStrings.iveVerifiedThis);
+      await verifyMedication(tester);
       expect(find.text('Schedule preview'), findsOneWidget);
       await tapText(tester, AppStrings.saveAndSetReminders);
       final saved = (host.result! as List<Medicine>).single;
@@ -171,13 +186,13 @@ void main() {
       final med = candidate(name: 'Levothyroxine', dose: '500 mcg');
       final host = await open(tester, review([med]));
       expect(find.text('Check the strength'), findsOneWidget);
-      await tapText(tester, AppStrings.iveVerifiedThis);
+      await verifyMedication(tester);
       expect(find.text(AppStrings.verified), findsNothing);
       await tapText(tester, AppStrings.saveAndSetReminders);
       expect(host.returned, isFalse);
 
       await tapText(tester, 'I compared this strength');
-      await tapText(tester, AppStrings.iveVerifiedThis);
+      await verifyMedication(tester);
       expect(find.text(AppStrings.verified), findsOneWidget);
       await tapText(tester, AppStrings.saveAndSetReminders);
       // Never substituted: the strength is saved exactly as entered.
@@ -204,7 +219,7 @@ void main() {
           await open(tester, review([candidate(id: 'a'), candidate(id: 'b')]));
       expect(find.text('0 of 2 verified. Verify every medication to save.'),
           findsOneWidget);
-      await tapText(tester, AppStrings.iveVerifiedThis);
+      await verifyMedication(tester);
       expect(find.text('1 of 2 verified. Verify every medication to save.'),
           findsOneWidget);
       await tapText(tester, AppStrings.saveAndSetReminders);
@@ -249,7 +264,9 @@ void main() {
       await open(tester, review([candidate(days: null)]));
       expect(find.text('Ongoing, no end date (maintenance)'), findsOneWidget);
       expect(
-          find.textContaining('Reminders continue every day'), findsOneWidget);
+          find.textContaining(
+              'Reminders continue until you change or stop this'),
+          findsOneWidget);
     });
   });
 

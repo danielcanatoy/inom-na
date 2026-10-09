@@ -8,6 +8,7 @@ import '../models/medicine.dart';
 import 'fallback_parser.dart';
 import 'med_names.dart';
 import 'review_note.dart';
+import 'scan_control.dart';
 import 'store.dart';
 
 class ParseResult {
@@ -16,6 +17,9 @@ class ParseResult {
   final String source; // RxParser.srcVision / srcText / srcOffline
   final String? note;
   final Map<String, String> warnings; // Medicine.id -> warning to review
+
+  /// Counts-only facts about how this result was produced.
+  ScanDiagnostics? diagnostics;
 }
 
 /// Order: (1) Ollama vision (image + OCR text), (2) Ollama text (OCR text),
@@ -65,34 +69,65 @@ How to read it:
 - If a medicine is partly unreadable, retain its best reading and explicit uncertainties. Do not silently skip a visible medicine or guess medicines that are not written.''';
 
   /// Typed prescription text (no image).
-  static Future<ParseResult> parse(String text) => _run(text, null);
+  static Future<ParseResult> parse(String text, {ScanControl? control}) =>
+      _run(text, null, control: control);
 
   /// Scan: [imagePath] = photo, [ocrText] = text read by ML Kit.
-  static Future<ParseResult> parseImage(String imagePath, String ocrText) =>
-      _run(ocrText, imagePath);
+  static Future<ParseResult> parseImage(String imagePath, String ocrText,
+          {bool ocrFailed = false, ScanControl? control}) =>
+      _run(ocrText, imagePath, ocrFailed: ocrFailed, control: control);
 
-  static Future<ParseResult> _run(String text, String? imagePath) async {
+  static Future<ParseResult> _run(String text, String? imagePath,
+      {bool ocrFailed = false, ScanControl? control}) async {
+    control?.check();
+    final result = await _interpret(text, imagePath,
+        ocrFailed: ocrFailed, control: control);
+    control?.check(); // A cancelled scan's late result is discarded.
+    result.diagnostics = ScanDiagnostics(
+      textLength: text.trim().length,
+      ocrFailed: ocrFailed,
+      found: result.meds.length,
+      usedLaptop: result.source != srcOffline,
+    );
+    if (kDebugMode) {
+      // Counts only: prescription contents are never logged.
+      debugPrint('IMedsU scan: mode=${Store.processingMode.name} '
+          'ocrFailed=$ocrFailed chars=${text.trim().length} '
+          'found=${result.meds.length} laptop=${result.source != srcOffline}');
+    }
+    return result;
+  }
+
+  static Future<ParseResult> _interpret(String text, String? imagePath,
+      {required bool ocrFailed, ScanControl? control}) async {
     final hasText = text.trim().isNotEmpty;
     String? note;
-    final models = await _models();
-    if (models == null) {
-      note = 'The laptop AI (Ollama) could not be reached, so the offline '
+    // Phone Only (default) never waits for the laptop.
+    final models = Store.processingMode == ProcessingMode.enhanced
+        ? await _modelsFor(control)
+        : null;
+    control?.check();
+    if (Store.processingMode == ProcessingMode.enhanced && models == null) {
+      note = 'The laptop AI (Ollama) could not be reached, so the rule-based '
           'reader on this phone was used.';
-    } else {
+    } else if (models != null) {
       // 1. Vision: the model sees the photo itself (best for handwriting)
       if (imagePath != null) {
         if (_has(models, Store.visionModel)) {
           try {
+            control?.stage('Reading the photo with the laptop AI (Ollama)');
             final bytes = await File(imagePath).readAsBytes();
             final meds = await _ollama(
               Store.visionModel,
               '$_visionHints\n\nOCR text (hint only):\n${hasText ? text : '(none)'}',
               image: base64Encode(bytes),
               timeout: const Duration(seconds: 150),
+              client: control?.client(),
             );
             if (meds.isNotEmpty) return _done(meds, srcVision, null, text);
             note = 'The vision model found no medications in the photo.';
           } catch (_) {
+            control?.check();
             note = 'The vision model returned an error.';
           }
         }
@@ -100,24 +135,33 @@ How to read it:
       // 2. Text: OCR text only
       if (hasText && _has(models, Store.ollamaModel)) {
         try {
-          final meds = await _ollama(Store.ollamaModel, text);
+          control?.stage('Interpreting the text with the laptop AI (Ollama)');
+          final meds =
+              await _ollama(Store.ollamaModel, text, client: control?.client());
           if (meds.isNotEmpty) return _done(meds, srcText, note, text);
           note = 'The laptop AI found no medications, so the offline reader '
               'on this phone was used.';
         } catch (_) {
+          control?.check();
           note = 'The laptop AI returned an error, so the offline reader on '
               'this phone was used.';
         }
       }
     }
 
-    // 3. Offline parser on the phone (always available)
+    // 3. Rule-based reader on the phone (always available, no AI model).
+    control?.check();
+    control?.stage("Interpreting with this phone's rule-based reader");
     if (!hasText) {
       return ParseResult(
           [],
           srcOffline,
-          'No text could be read. Try again in brighter light, or type the '
-          'prescription instead.');
+          ocrFailed
+              ? 'Text recognition failed on this phone. Retake the photo, '
+                  'type the prescription, or add the medicine manually.'
+              : 'No text was found in the photo. Retake it in brighter light '
+                  'with the prescription filling the frame, type the '
+                  'prescription, or add the medicine manually.');
     }
     return _done(FallbackParser.parse(text), srcOffline, note, text);
   }
@@ -125,6 +169,14 @@ How to read it:
   /// Checks each name (only small typos are corrected) and attaches warnings
   /// the user must review. [ocrText] catches medicines a model replaced or
   /// invented.
+  /// Phone-only reading of (possibly corrected) text: rule-based, instant,
+  /// no network. Used to re-read recognized text on the review screen.
+  static ParseResult readOnPhone(String text) => _done(
+      text.trim().isEmpty ? [] : FallbackParser.parse(text),
+      srcOffline,
+      null,
+      text);
+
   static ParseResult _done(List<Medicine> meds, String source,
       [String? note, String? ocrText]) {
     final warnings = <String, String>{};
@@ -185,30 +237,38 @@ How to read it:
   }
 
   static Future<List<Medicine>> _ollama(String model, String userContent,
-      {String? image, Duration timeout = const Duration(seconds: 90)}) async {
+      {String? image,
+      Duration timeout = const Duration(seconds: 90),
+      http.Client? client}) async {
     if (_cloudModel(model))
       throw const FormatException('Cloud models are not permitted.');
     final endpoint = Store.localOllamaUri(Store.ollamaUrl);
-    final res = await http
-        .post(
-          endpoint.resolve('/api/chat'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'model': model,
-            'messages': [
-              {'role': 'system', 'content': _system},
-              {
-                'role': 'user',
-                'content': userContent,
-                if (image != null) 'images': [image],
-              },
-            ],
-            'format': 'json',
-            'stream': false,
-            'options': {'temperature': 0},
-          }),
-        )
-        .timeout(timeout);
+    final http.Client c = client ?? http.Client();
+    final http.Response res;
+    try {
+      res = await c
+          .post(
+            endpoint.resolve('/api/chat'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'model': model,
+              'messages': [
+                {'role': 'system', 'content': _system},
+                {
+                  'role': 'user',
+                  'content': userContent,
+                  if (image != null) 'images': [image],
+                },
+              ],
+              'format': 'json',
+              'stream': false,
+              'options': {'temperature': 0},
+            }),
+          )
+          .timeout(timeout);
+    } finally {
+      if (client == null) c.close();
+    }
     if (res.statusCode != 200)
       throw Exception('Local AI request failed (${res.statusCode}).');
     final content =
@@ -434,9 +494,15 @@ How to read it:
   }
 
   /// Models available on Ollama, or null if unreachable (4-second timeout).
-  static Future<List<String>?> _models() async {
+  static Future<List<String>?> _modelsFor(ScanControl? control) async {
+    control?.stage('Connecting to the laptop AI (Ollama)');
+    return _models(client: control?.client());
+  }
+
+  static Future<List<String>?> _models({http.Client? client}) async {
+    final http.Client c = client ?? http.Client();
     try {
-      final res = await http
+      final res = await c
           .get(Store.localOllamaUri(Store.ollamaUrl).resolve('/api/tags'))
           .timeout(const Duration(seconds: 4));
       if (res.statusCode != 200) return null;
@@ -445,6 +511,8 @@ How to read it:
           .toList();
     } catch (_) {
       return null;
+    } finally {
+      if (client == null) c.close();
     }
   }
 

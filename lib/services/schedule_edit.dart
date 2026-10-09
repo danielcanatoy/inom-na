@@ -29,28 +29,53 @@ class ScheduleEdit {
       saved.taken.isNotEmpty ||
       saved.allDoses(horizon: now).any((d) => d.isBefore(now));
 
-  /// New clock times may apply from today only if none of today's doses,
-  /// old or new, has already passed or been marked taken. Otherwise one day
-  /// could get extra or missing doses, so the change starts tomorrow.
-  static bool canApplyToday(
+  /// The change point for "Today": the current minute.
+  static DateTime _todayPoint(DateTime now) =>
+      DateTime(now.year, now.month, now.day, now.hour, now.minute);
+
+  /// Why new clock times cannot apply from now (today), or null if they can.
+  /// Today's earlier doses (and anything already taken) stay as they were;
+  /// only today's remaining doses follow the new times. Allowed only when
+  /// today still ends up with exactly the prescribed number of doses and no
+  /// later dose today was already marked taken.
+  static String? todayBlockReason(
       Medicine saved, List<String> newTimes, DateTime now) {
+    final point = _todayPoint(now);
     final today = dayStart(now);
     final tomorrow = today.add(const Duration(days: 1));
+    var earlier = 0;
     for (final dose in saved.allDoses(horizon: tomorrow, from: today)) {
       if (!dose.isBefore(tomorrow)) break;
-      if (dose.isBefore(now) || saved.isTaken(dose)) return false;
+      if (dose.isBefore(point)) {
+        earlier++;
+      } else if (saved.isTaken(dose)) {
+        return 'A later dose today is already marked taken. Undo it first, '
+            'or apply the change from tomorrow.';
+      }
     }
-    return newTimes.every((time) =>
-        !Medicine.validTime(time) ||
-        !Medicine.atTime(today, time).isBefore(now));
+    final valid = newTimes.where(Medicine.validTime).toList();
+    final later =
+        valid.where((t) => !Medicine.atTime(today, t).isBefore(point)).length;
+    final total = earlier + later;
+    if (total != valid.length) {
+      return 'Today would have $total ${total == 1 ? "dose" : "doses"} '
+          'instead of ${valid.length}, so the new times start tomorrow. '
+          "Today's schedule stays as it was.";
+    }
+    return null;
   }
 
-  /// When new clock times take effect: today (if allowed and chosen) or
-  /// tomorrow, never earlier than the current rule's own start.
+  static bool canApplyToday(
+          Medicine saved, List<String> newTimes, DateTime now) =>
+      todayBlockReason(saved, newTimes, now) == null;
+
+  /// When new clock times take effect: from now (today, if allowed and
+  /// chosen) or from tomorrow, never earlier than the current rule's start.
   static DateTime clockEffectiveFrom(Medicine saved, DateTime now,
       {required bool today}) {
-    final day = dayStart(now).add(Duration(days: today ? 0 : 1));
-    return day.isBefore(saved.start) ? saved.start : day;
+    final point =
+        today ? _todayPoint(now) : dayStart(now).add(const Duration(days: 1));
+    return point.isBefore(saved.start) ? saved.start : point;
   }
 
   /// The next dose of the current schedule after [now]; the default first

@@ -107,6 +107,21 @@ Future<void> enterTime(WidgetTester tester, int hour, int minute,
   await tester.pumpAndSettle();
 }
 
+/// Taps "Verify Medication" and confirms the dialog when it appears.
+Future<void> verifyMedication(WidgetTester tester) async {
+  final button = find.text('Verify Medication').last;
+  await tester.ensureVisible(button);
+  await tester.pump();
+  await tester.tap(button);
+  await tester.pumpAndSettle();
+  final confirm = find.descendant(
+      of: find.byType(AlertDialog), matching: find.text("I've Verified This"));
+  if (confirm.evaluate().isNotEmpty) {
+    await tester.tap(confirm);
+    await tester.pumpAndSettle();
+  }
+}
+
 void main() {
   group('My Daily Routine', () {
     testWidgets('first save stores the routine; cancel saves nothing',
@@ -191,9 +206,10 @@ void main() {
           tester, EditScheduleScreen(medicine: saved, clock: () => clockNow));
       await tapText(tester, '8:00 AM');
       await enterTime(tester, 9, 0);
-      // 8:00 AM today already passed, so the change starts tomorrow.
-      expect(
-          find.textContaining('the new times start tomorrow'), findsOneWidget);
+      // 8:00 AM (taken) stays; today's remaining dose follows the new
+      // times, so today still has exactly two doses.
+      expect(find.textContaining('remaining doses follow the new times'),
+          findsOneWidget);
       expect(find.text('Upcoming Reminders'), findsOneWidget);
       await tapText(tester, 'Save Changes');
       expect(find.text('Save schedule changes?'), findsOneWidget);
@@ -208,7 +224,13 @@ void main() {
       final revised = host.result! as Medicine;
       expect(revised.id, saved.id);
       expect(revised.times, ['09:00', '20:00']);
-      expect(revised.start, DateTime(2030, 1, 11));
+      expect(revised.start, clockNow); // Applies from now, today.
+      expect(revised.isTaken(DateTime(2030, 1, 10, 8)), isTrue);
+      expect(
+          revised.allDoses(
+              horizon: DateTime(2030, 1, 10, 23, 59),
+              from: DateTime(2030, 1, 10)),
+          [DateTime(2030, 1, 10, 8), DateTime(2030, 1, 10, 20)]);
       expect(revised.taken, saved.taken);
       expect(revised.revisions, hasLength(1));
       expect(revised.routineLink, isNull); // Customized times.
@@ -292,7 +314,7 @@ void main() {
     await tapText(tester, 'Use These Times');
     expect(find.text('6:00 AM'), findsWidgets);
     expect(find.text('Based on My Daily Routine'), findsWidgets);
-    await tapText(tester, "I've Verified This");
+    await verifyMedication(tester);
     await tapText(tester, 'Save and Set Reminders');
     final saved = (host.result! as List<Medicine>).single;
     expect(saved.times, ['06:00', '21:00']);
@@ -307,6 +329,9 @@ void main() {
     addTearDown(tester.view.reset);
     await tester.pumpWidget(
         MaterialApp(theme: AppTheme.light(), home: const HomeScreen()));
+    await tester.pumpAndSettle();
+    // Saved medicines and the routine prompt live on the Medications tab.
+    await tester.tap(find.text('Medications'));
     await tester.pumpAndSettle();
     expect(find.text('Set Up My Daily Routine'), findsOneWidget);
     expect(find.text('Edit Schedule'), findsOneWidget);

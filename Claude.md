@@ -130,6 +130,14 @@ Camera / gallery / typed prescription
 - Follow-ups: `ReminderPlan.build(followUpMinutes:)`, keys `followup:<doseId>` (one-off, finite courses within 7 days) and `followup-daily:<medId>:<HH:mm>` (repeating, ongoing). Primary reminders get capacity first. `cancelDose` removes the dose's follow-up. Settings: `followup_enabled` (default true), `followup_minutes` (10/30/60, default 30).
 - `lib/screens/calendar_screen.dart`, `lib/ui/dose_widgets.dart`. Home Scan button is a fixed bottom bar (no FAB over card actions).
 
+### Phase 4 refinement (October 10, 2026, uncommitted on `phase4-reminders-tracking`)
+
+- **Phone Only is the default processing mode** (`Store.processingMode`, key `processing_mode`): ML Kit OCR (bundled model, offline) + rule-based `FallbackParser`; never waits for the laptop. "Enhanced AI" adds laptop Ollama with a disclosed fallback. The Dart parser is NOT an AI model; never describe it as one.
+- Offline "No medicines found" root cause: the rule-based parser dropped whole medicines on common phone-OCR misreads (`5OOmg`, `500 rng`, bracketed brands, strength on the next line), then discarded their directions. Fixed with OCR-tolerant matching (flagged for review, never silent) plus a recovery UI that keeps and re-reads the recognized text.
+- `ScanControl` (`lib/services/scan_control.dart`) cancels scans: aborts Ollama HTTP, discards late results; `ScanDiagnostics` holds counts only (never prescription text). Debug logs: `IMedsU scan:` counts only.
+- Review screen: compact summary cards, "Edit Details" + "Verify Medication" (confirmation dialog). Today edits apply from now only if today keeps exactly the prescribed dose count (`ScheduleEdit.todayBlockReason`).
+- Navigation: bottom bar Home / Calendar / Medications inside `HomeScreen` (single state owner); Settings holds Prescription Reading, My Daily Routine, notifications.
+
 ### Remaining Phase 1/device risks
 
 - Real HyperOS reminder delivery while locked/backgrounded, after app termination and after reboot.

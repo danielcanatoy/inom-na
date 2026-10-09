@@ -14,6 +14,26 @@ class MedicationDetailsScreen extends StatelessWidget {
   const MedicationDetailsScreen({super.key, required this.medicine});
   final Medicine medicine;
 
+  Future<void> _edit(BuildContext context, {required bool correct}) async {
+    final revised = await Navigator.push<Medicine>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => EditScheduleScreen(
+                medicine: medicine, correctPrescription: correct)));
+    if (revised != null && context.mounted) Navigator.pop(context, revised);
+  }
+
+  /// Newest taken records first: scheduled time and confirmation time.
+  List<String> _history() {
+    final keys = medicine.taken.toSet().toList()
+      ..sort((a, b) => b.compareTo(a));
+    return [
+      for (final key in keys.take(10))
+        if (DateTime.tryParse(key.replaceFirst(' ', 'T')) case final at?)
+          '${Fmt.dateTime(at)} — ${medicine.takenAt[key] == null ? 'marked taken (time not recorded)' : 'marked taken at ${Fmt.dateTime(medicine.takenAt[key]!)}'}',
+    ];
+  }
+
   Widget _row(BuildContext context, String label, String value) {
     final textTheme = Theme.of(context).textTheme;
     return Padding(
@@ -89,9 +109,34 @@ class MedicationDetailsScreen extends StatelessWidget {
               lines: [
                 ...StrengthCheck.concerns(m.name, m.dose),
                 'Compare it with your prescription and ask your pharmacist '
-                    'if unsure. To correct it, use Edit Schedule > Correct '
-                    'prescription details.',
+                    'if unsure. To correct it, use Edit Medication.',
               ],
+            ),
+          const SectionHeader('Intake history',
+              icon: Icons.fact_check_outlined),
+          if (_history().isEmpty)
+            Text('No doses marked taken yet.', style: textTheme.bodyMedium)
+          else
+            for (final line in _history())
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text('•  $line', style: textTheme.bodyMedium),
+              ),
+          if (m.sourceText != null)
+            Card(
+              clipBehavior: Clip.antiAlias,
+              child: ExpansionTile(
+                leading: const Icon(Icons.notes_outlined),
+                title: const Text('Original prescription text'),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    child: SizedBox(
+                        width: double.infinity,
+                        child: SelectableText(m.sourceText!)),
+                  ),
+                ],
+              ),
             ),
           if (m.revisions.isNotEmpty) ...[
             const SectionHeader('Schedule changes', icon: Icons.history),
@@ -113,15 +158,16 @@ class MedicationDetailsScreen extends StatelessWidget {
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              onPressed: () async {
-                final revised = await Navigator.push<Medicine>(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => EditScheduleScreen(medicine: m)));
-                if (revised != null && context.mounted) {
-                  Navigator.pop(context, revised);
-                }
-              },
+              onPressed: () => _edit(context, correct: true),
+              icon: const Icon(Icons.edit_outlined),
+              label: const Text('Edit Medication'),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => _edit(context, correct: false),
               icon: const Icon(Icons.edit_calendar_outlined),
               label: const Text('Edit Schedule'),
             ),

@@ -16,7 +16,11 @@ class CalendarScreen extends StatefulWidget {
     required this.onTake,
     this.isBusy,
     this.clock,
+    this.embedded = false,
   });
+
+  /// Shown as a tab inside Home (no own app bar).
+  final bool embedded;
 
   /// Reads the latest saved medicines (they change after marking doses).
   final List<Medicine> Function() medicines;
@@ -45,6 +49,18 @@ class _CalendarScreenState extends State<CalendarScreen> {
   /// Sunday of the selected week (calendar arithmetic; DST-safe).
   DateTime get _weekStart => DateTime(
       _selected.year, _selected.month, _selected.day - (_selected.weekday % 7));
+
+  Future<void> _jumpToDate() async {
+    final now = _now();
+    final picked = await showDatePicker(
+      context: context,
+      helpText: 'JUMP TO DATE',
+      initialDate: _selected,
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year + 5, 12, 31),
+    );
+    if (picked != null && mounted) setState(() => _selected = _day(picked));
+  }
 
   void _moveWeek(int weeks) => setState(() => _selected =
       DateTime(_selected.year, _selected.month, _selected.day + 7 * weeks));
@@ -75,7 +91,9 @@ class _CalendarScreenState extends State<CalendarScreen> {
     final dayLabel = _selected == today ? 'today' : 'on ${Fmt.date(_selected)}';
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Medication Calendar')),
+      appBar: widget.embedded
+          ? null
+          : AppBar(title: const Text('Medication Calendar')),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
         children: [
@@ -85,10 +103,13 @@ class _CalendarScreenState extends State<CalendarScreen> {
                 onPressed: () => _moveWeek(-1),
                 icon: const Icon(Icons.chevron_left)),
             Expanded(
-              child: Semantics(
-                header: true,
-                child: Text('${_months[_selected.month - 1]} ${_selected.year}',
-                    textAlign: TextAlign.center, style: textTheme.titleLarge),
+              // Tap the month to jump to any date. Viewing a date never
+              // changes any medication.
+              child: TextButton.icon(
+                onPressed: _jumpToDate,
+                icon: const Icon(Icons.edit_calendar_outlined),
+                label: Text('${_months[_selected.month - 1]} ${_selected.year}',
+                    style: textTheme.titleLarge),
               ),
             ),
             IconButton(

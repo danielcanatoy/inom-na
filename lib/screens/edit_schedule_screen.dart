@@ -15,7 +15,15 @@ import '../ui/routine_suggestion.dart';
 /// revised medicine only after the user confirms; cancel returns null and the
 /// saved medicine, its history and its reminders are untouched.
 class EditScheduleScreen extends StatefulWidget {
-  const EditScheduleScreen({super.key, required this.medicine, this.clock});
+  const EditScheduleScreen({
+    super.key,
+    required this.medicine,
+    this.clock,
+    this.correctPrescription = false,
+  });
+
+  /// Opens as "Edit Medication" with prescription corrections shown.
+  final bool correctPrescription;
   final Medicine medicine;
   final DateTime Function()? clock;
 
@@ -31,7 +39,7 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
   late bool _applyToday =
       ScheduleEdit.canApplyToday(_saved, _draft.times, _now());
   bool _dirty = false;
-  bool _correcting = false;
+  late bool _correcting = widget.correctPrescription;
   bool _corrected = false;
   bool _correctionVerified = false;
   bool _endEdited = false;
@@ -79,9 +87,12 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
 
   Medicine get _next {
     final next = _draft.copy();
-    if (_isClock && _started) next.start = _effectiveFrom;
+    if (!_isInterval && _started) next.start = _effectiveFrom;
     // Keep the same number of remaining doses unless the end was corrected.
-    if (!_endEdited) {
+    // Moving times keeps the same number of remaining doses. A corrected
+    // frequency, interval or schedule type keeps the course's end instead,
+    // so the corrected rate decides the doses.
+    if (!_endEdited && !_rateChanged) {
       next.end = ScheduleEdit.preservedEnd(_saved, next, _effectiveFrom);
     }
     return next;
@@ -229,7 +240,7 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
               avatar: const Icon(Icons.add, size: 18),
               label: Text(_draft.scheduleKind == ScheduleKind.explicit
                   ? 'Add Written Time'
-                  : 'Add Reminder Time'),
+                  : 'Add Dose Time'),
               onPressed: () => _editTime(null, correction: correction)),
       ]);
 
@@ -340,6 +351,25 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
     }
   }
 
+  /// Last dose of the corrected course, when it is valid.
+  DateTime? get _lastDosePreview {
+    try {
+      final next = _next;
+      if (next.validationErrors().isNotEmpty) return null;
+      return _saved.withScheduleFrom(next, _effectiveFrom).lastDose;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  bool get _rateChanged =>
+      _draft.scheduleKind != _saved.scheduleKind ||
+      _draft.intervalHours != _saved.intervalHours ||
+      (_draft.scheduleKind == ScheduleKind.daily &&
+          _draft.frequencyPerDay != _saved.frequencyPerDay) ||
+      (_draft.scheduleKind == ScheduleKind.explicit &&
+          _draft.times.length != _saved.times.length);
+
   List<Widget> _correctionSection(TextTheme textTheme) => [
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
@@ -388,6 +418,42 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
                   () => _draft.qtyPerIntake = double.tryParse(v) ?? 0,
                   correction: true)),
           const SizedBox(height: 12),
+          DropdownButtonFormField<ScheduleKind>(
+            initialValue: _draft.scheduleKind == ScheduleKind.unknown
+                ? null
+                : _draft.scheduleKind,
+            isExpanded: true,
+            isDense: false,
+            itemHeight: null,
+            decoration: const InputDecoration(
+                labelText: 'Schedule type (as prescribed)'),
+            items: const [
+              DropdownMenuItem(
+                  value: ScheduleKind.daily,
+                  child: Text('Times per day (OD/BID/TID/QID)')),
+              DropdownMenuItem(
+                  value: ScheduleKind.interval,
+                  child: Text('Exact interval (q6h/q8h)')),
+              DropdownMenuItem(
+                  value: ScheduleKind.explicit,
+                  child: Text('Written clock times')),
+              DropdownMenuItem(
+                  value: ScheduleKind.prn,
+                  child: Text('As needed (PRN, no reminders)')),
+            ],
+            onChanged: (kind) {
+              if (kind == null) return;
+              _edit(() {
+                _draft.scheduleKind = kind;
+                _draft.routineLink = null;
+                if (kind == ScheduleKind.daily) {
+                  _draft.frequencyPerDay ??= _draft.times.length;
+                }
+                if (kind == ScheduleKind.interval) _anchorChosen = false;
+              }, correction: true);
+            },
+          ),
+          const SizedBox(height: 12),
           if (_draft.scheduleKind == ScheduleKind.daily)
             TextFormField(
                 initialValue: _draft.frequencyPerDay?.toString() ?? '',
@@ -429,7 +495,28 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
                   : (_saved.scheduleEnd ?? _now().add(const Duration(days: 7)));
             }, correction: true),
           ),
-          if (_draft.end != null)
+          if (_draft.end != null) ...[
+            TextFormField(
+              key: const ValueKey('course-days'),
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: 'Course length in days (optional)',
+                helperText: 'Counted from the original start, '
+                    '${Fmt.dateTime(_saved.originalStart)}.',
+                helperMaxLines: 2,
+              ),
+              onChanged: (v) {
+                final days = int.tryParse(v.trim());
+                if (days == null || days <= 0 || days > 3650) return;
+                _edit(() {
+                  _endEdited = true;
+                  final s = _saved.originalStart;
+                  _draft.end =
+                      DateTime(s.year, s.month, s.day + days, s.hour, s.minute);
+                }, correction: true);
+              },
+            ),
+            const SizedBox(height: 8),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
@@ -446,6 +533,59 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
                 label: Text(
                     'Ends: ${Fmt.dateTime(_draft.end!)} (no doses from then)'),
               ),
+            ),
+            if (_lastDosePreview != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text('Last dose: ${Fmt.dateTime(_lastDosePreview!)}',
+                    style: textTheme.bodyMedium
+                        ?.copyWith(fontWeight: FontWeight.w600)),
+              ),
+          ] else
+            Text('Reminders continue until you change or stop this schedule.',
+                style: textTheme.bodySmall),
+          const SizedBox(height: 12),
+          TextFormField(
+              initialValue: _draft.instructions,
+              maxLines: null,
+              decoration: const InputDecoration(
+                  labelText: 'Directions (as interpreted)',
+                  helperText: 'The original prescription text below is kept '
+                      'unchanged.'),
+              onChanged: (v) => _edit(() => _draft.instructions = v.trim(),
+                  correction: true)),
+          const SizedBox(height: 12),
+          TextFormField(
+              initialValue: _draft.stock?.toString() ?? '',
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(
+                  labelText: 'Quantity bought (optional)'),
+              onChanged: (v) => _edit(() => _draft.stock = int.tryParse(v),
+                  correction: true)),
+          if (_saved.sourceText != null) ...[
+            const SizedBox(height: 12),
+            Text('Original prescription text (kept as read)',
+                style: textTheme.bodySmall),
+            const SizedBox(height: 4),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.background,
+                borderRadius: BorderRadius.circular(AppTheme.radius),
+                border: Border.all(color: AppColors.divider),
+              ),
+              child: SelectableText(_saved.sourceText!),
+            ),
+          ],
+          if (_started)
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: Text(
+                  'This medicine already has dose history, so its original '
+                  'start (${Fmt.dateTime(_saved.originalStart)}) and past '
+                  'doses stay as recorded. Corrections apply to future doses.',
+                  style: textTheme.bodySmall),
             ),
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
@@ -466,7 +606,9 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
     final textTheme = Theme.of(context).textTheme;
     final now = _now();
     final errors = _dirty ? _errors : const <String>[];
-    final todayAllowed = ScheduleEdit.canApplyToday(_saved, _draft.times, now);
+    final todayReason =
+        ScheduleEdit.todayBlockReason(_saved, _draft.times, now);
+    final todayAllowed = todayReason == null;
     final preview = errors.isEmpty && _draft.scheduleKind != ScheduleKind.prn
         ? _saved
             .withScheduleFrom(_next, _effectiveFrom)
@@ -481,7 +623,10 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
         if (!didPop) _confirmDiscard();
       },
       child: Scaffold(
-        appBar: AppBar(title: const Text('Edit Schedule')),
+        appBar: AppBar(
+            title: Text(widget.correctPrescription
+                ? 'Edit Medication'
+                : 'Edit Schedule')),
         body: ListView(
           padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
           children: [
@@ -527,9 +672,9 @@ class _EditScheduleScreenState extends State<EditScheduleScreen> {
               const SizedBox(height: 6),
               Text(
                   todayAllowed
-                      ? 'Today\'s doses will follow the new times.'
-                      : 'A dose today has already passed or been taken, so '
-                          'the new times start tomorrow. Today stays as it was.',
+                      ? "Today's earlier doses stay as they were. Today's "
+                          'remaining doses follow the new times.'
+                      : todayReason,
                   style: textTheme.bodySmall),
             ],
             if (_isClock && !_started) ...[

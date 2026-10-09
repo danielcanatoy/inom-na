@@ -68,26 +68,96 @@ class FallbackParser {
   static List<Medicine> parse(String text) {
     final drafts = <_Draft>[];
     _Draft? current;
-    for (final raw in text.split('\n')) {
-      final line = raw.trim();
-      if (line.isEmpty) continue;
+    final lines = [
+      for (final raw in text.split('\n'))
+        if (raw.trim().isNotEmpty) raw.trim()
+    ];
+    for (var i = 0; i < lines.length; i++) {
+      final original = lines[i];
+      // Tolerate common phone-OCR misreads (e.g. "5OOmg", "500 rng") and
+      // brand names in brackets, only for finding the medicine line.
+      final (line, unclear) = _normalizeOcr(original);
       final match = _medLine.firstMatch(line);
-      final name =
-          match == null ? _bareName(line) : _cleanName(match.group(1)!);
+      var name = match == null ? _bareName(line) : _cleanName(match.group(1)!);
+      var dose = match?.group(2)?.replaceAll(' ', '') ?? '';
+      var consumedNext = false;
+      if (match == null &&
+          (name != null || _plausibleName(line)) &&
+          i + 1 < lines.length) {
+        // Name and strength on separate lines (common in OCR layouts).
+        final (nextLine, nextUnclear) = _normalizeOcr(lines[i + 1]);
+        final strength = _strengthOnly.firstMatch(nextLine);
+        if (strength != null) {
+          name ??= _cleanName(line);
+          dose = strength.group(1)!.replaceAll(' ', '');
+          consumedNext = true;
+          if (nextUnclear.isNotEmpty) unclear.add(dose);
+        }
+      }
       if (name != null && name.length >= 3 && !_notName.hasMatch(name)) {
-        final dose = match?.group(2)?.replaceAll(' ', '') ?? '';
         final negativeDose = match != null &&
             RegExp(r'-\s*\d').hasMatch(line.substring(0, match.end));
-        current = _Draft(name, negativeDose ? '-$dose' : dose);
+        current = _Draft(name, negativeDose ? '-$dose' : dose)
+          ..unclearStrength = unclear.isNotEmpty;
         drafts.add(current);
         final directions =
             match == null ? '' : line.substring(match.end).trim();
         if (directions.isNotEmpty) _apply(current, directions);
+        if (consumedNext) i++;
       } else if (current != null) {
-        _apply(current, line);
+        // A strength on the line after a bare known name belongs to it.
+        final strength = _strengthOnly.firstMatch(line);
+        if (strength != null && current.dose.isEmpty) {
+          current.dose = strength.group(1)!.replaceAll(' ', '');
+          if (unclear.isNotEmpty) current.unclearStrength = true;
+          continue;
+        }
+        _apply(current, original);
       }
     }
     return [for (var i = 0; i < drafts.length; i++) _medicine(drafts[i], i)];
+  }
+
+  /// A line that is only a strength, e.g. "500mg" or "250 mg capsule".
+  static final _strengthOnly = RegExp(
+      r'^\W*(\d+(?:\.\d+)?\s*(?:mg|mcg|g|ml|iu)(?:\s*/\s*\d+(?:\.\d+)?\s*(?:mg|ml))?)'
+      r'(?:\s*(?:tabs?|tablets?|caps?|capsules?))?\W*$',
+      caseSensitive: false);
+
+  /// Words that start header lines, never medicine names.
+  static final _headerWord = RegExp(
+      r'^(patient|name|date|age|sex|address|doctor|dr|md|clinic|hospital|'
+      r'lic|license|ptr|s2|sample|demo|signature|rx|sig|qty|no|tel|phone)\b',
+      caseSensitive: false);
+
+  /// One to three words of letters that could be an (unlisted) medicine name.
+  static bool _plausibleName(String line) =>
+      !line.contains(':') &&
+      !_headerWord.hasMatch(_cleanName(line)) &&
+      RegExp(r'^[A-Za-z][A-Za-z\-]{3,}(?:\s+[A-Za-z][A-Za-z\-]+){0,2}$')
+          .hasMatch(_cleanName(line));
+
+  /// Fixes OCR look-alikes inside strengths only (O→0, l/I→1, "rng"→"mg")
+  /// and drops bracketed brand names. Returns the strengths that needed
+  /// fixing so they can be flagged for review; never applied silently.
+  static (String, List<String>) _normalizeOcr(String line) {
+    final unclear = <String>[];
+    var result = line.replaceAll(RegExp(r'\([^)]*\)'), ' ');
+    result = result.replaceAllMapped(
+        RegExp(r'(\d)\s*(rng|rnq|mq|nng)\b', caseSensitive: false), (m) {
+      unclear.add(m[0]!);
+      return '${m[1]}mg';
+    });
+    result = result.replaceAllMapped(
+        RegExp(r'\b([0-9OolI|]*\d[0-9OolI|]*)(\s*)(mg|mcg|g|ml|iu)\b',
+            caseSensitive: false), (m) {
+      final digits = m[1]!
+          .replaceAll(RegExp('[Oo]'), '0')
+          .replaceAll(RegExp('[lI|]'), '1');
+      if (digits != m[1]) unclear.add(m[0]!);
+      return '$digits${m[2]}${m[3]}';
+    });
+    return (result.replaceAll(RegExp(r'\s{2,}'), ' ').trim(), unclear);
   }
 
   static Medicine _medicine(_Draft draft, int index) {
@@ -152,6 +222,11 @@ class FallbackParser {
       kind = ScheduleKind.daily;
       frequency = frequencies.single;
       times = Medicine.defaultTimes(frequency, bedtime: draft.bedtime);
+    }
+    if (draft.unclearStrength) {
+      notes.add('Some characters in the strength were unclear in the scan '
+          'and were read as ${draft.dose}. Check it against the '
+          'prescription.');
     }
     if (draft.odAbbreviation) {
       notes
@@ -286,7 +361,8 @@ class FallbackParser {
 class _Draft {
   _Draft(this.name, this.dose);
   final String name;
-  final String dose;
+  String dose;
+  bool unclearStrength = false;
   final Set<int> frequencies = {};
   final Set<int> intervals = {};
   final Set<int> durations = {};

@@ -51,13 +51,25 @@ Future<void> openConfirmation(
   await tester.pumpAndSettle();
 }
 
+/// Taps "Verify Medication" and, if the confirmation dialog appears (no
+/// unresolved problems), confirms it with "I've Verified This".
 Future<void> tapReview(WidgetTester tester) async {
-  final review = find.byType(CheckboxListTile);
+  final review = find.text('Verify Medication');
   await tester.ensureVisible(review);
   await tester.pump();
   await tester.tap(review);
   await tester.pumpAndSettle();
+  final confirm = find.descendant(
+      of: find.byType(AlertDialog), matching: find.text("I've Verified This"));
+  if (confirm.evaluate().isNotEmpty) {
+    await tester.tap(confirm);
+    await tester.pumpAndSettle();
+  }
 }
+
+/// The medicine shows the "Verified" status badge.
+bool isVerified(WidgetTester tester) =>
+    find.text('Verified').evaluate().isNotEmpty;
 
 Future<void> tapSave(WidgetTester tester) async {
   await tester.tap(find.text('Save and Set Reminders'));
@@ -71,8 +83,7 @@ void main() {
     final medicine = Medicine(id: 'draft', name: 'Paracetamol');
     await openConfirmation(tester, medicine, (_) => returned = true);
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isFalse);
+    expect(isVerified(tester), isFalse);
     await tapSave(tester);
     expect(returned, isFalse);
     expect(find.byType(ConfirmScreen), findsOneWidget);
@@ -88,8 +99,7 @@ void main() {
     expect(find.byType(ConfirmScreen), findsOneWidget);
 
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isTrue);
+    expect(isVerified(tester), isTrue);
     await tapSave(tester);
     expect(returned, hasLength(1));
     expect(returned!.single.name, 'Paracetamol');
@@ -100,19 +110,16 @@ void main() {
     var returned = false;
     await openConfirmation(tester, reviewedCandidate(), (_) => returned = true);
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isTrue);
+    expect(isVerified(tester), isTrue);
 
     final doseField = fieldWithLabel('Strength / dose');
     await tester.ensureVisible(doseField);
     await tester.pump();
     await tester.enterText(doseField, '0mg');
     await tester.pumpAndSettle();
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isFalse);
+    expect(isVerified(tester), isFalse);
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isFalse);
+    expect(isVerified(tester), isFalse);
     await tapSave(tester);
     expect(returned, isFalse);
 
@@ -162,8 +169,7 @@ void main() {
     List<Medicine>? returned;
     await openConfirmation(tester, medicine, (value) => returned = value);
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isFalse);
+    expect(isVerified(tester), isFalse);
     await tapSave(tester);
     expect(returned, isNull);
 
@@ -179,8 +185,7 @@ void main() {
     await tester.tap(find.text('OK'));
     await tester.pumpAndSettle();
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isTrue);
+    expect(isVerified(tester), isTrue);
     await tapSave(tester);
     expect(returned, hasLength(1));
     expect(returned!.single.intervalHours, 8);
@@ -207,8 +212,7 @@ void main() {
     await tester.tap(find.text('OK'));
     await tester.pumpAndSettle();
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isFalse);
+    expect(isVerified(tester), isFalse);
     await tapSave(tester);
     expect(returned, isNull);
 
@@ -222,8 +226,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(InputChip), findsNothing);
     await tapReview(tester);
-    expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
-        isTrue);
+    expect(isVerified(tester), isTrue);
     await tapSave(tester);
     expect(returned, hasLength(1));
     expect(returned!.single.times, isEmpty);

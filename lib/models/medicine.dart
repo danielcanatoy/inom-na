@@ -26,6 +26,7 @@ class Medicine {
     this.legacy = false,
     this.routineLink,
     List<ScheduleRevision>? revisions,
+    this.sourceText,
   })  : times = List<String>.of(times ?? []),
         start = start ?? DateTime.now(),
         taken = (taken ?? []).toSet().toList(),
@@ -62,6 +63,10 @@ class Medicine {
   /// Set when the reminder times were generated from My Daily Routine; null
   /// for prescribed, interval or customized times.
   RoutineLink? routineLink;
+
+  /// The prescription text as originally recognized or typed (evidence).
+  /// Set once when first saved; edits to [instructions] never change it.
+  String? sourceText;
 
   /// Earlier schedule rules, oldest first. Each applies to doses before its
   /// `until`; the fields above are the current rule from the last `until`.
@@ -453,7 +458,8 @@ class Medicine {
     ..remove('taken')
     ..remove('takenAt')
     ..remove('revisions')
-    ..remove('routineLink');
+    ..remove('routineLink')
+    ..remove('sourceText');
 
   bool get allTaken {
     final stop = scheduleEnd;
@@ -506,6 +512,7 @@ class Medicine {
         'reviewNotes': reviewNotes,
         'legacy': legacy,
         if (routineLink != null) 'routineLink': routineLink!.toJson(),
+        if (sourceText != null) 'sourceText': sourceText,
         if (revisions.isNotEmpty)
           'revisions': revisions.map((r) => r.toJson()).toList(),
       };
@@ -554,6 +561,7 @@ class Medicine {
           ? null
           : RoutineLink.fromJson(
               Map<String, dynamic>.from(json['routineLink'] as Map)),
+      sourceText: json['sourceText'] as String?,
       revisions: [
         for (final raw in (json['revisions'] as List? ?? const []))
           ScheduleRevision.fromJson(Map<String, dynamic>.from(raw as Map)),

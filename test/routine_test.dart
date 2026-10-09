@@ -298,12 +298,13 @@ void main() {
       expect(updated.id, med.id);
       expect(updated.taken, med.taken);
       expect(updated.routineLink, spread);
-      // Today's 6:00 AM dose already passed, so the change starts tomorrow.
+      // Today's 6:00 AM dose (taken) stays; today's remaining dose moves to
+      // 10:00 PM, so today still has exactly two doses.
       final doses = updated.allDoses(
           horizon: DateTime(2030, 1, 11, 23, 59), from: DateTime(2030, 1, 10));
       expect(doses, [
         DateTime(2030, 1, 10, 6),
-        DateTime(2030, 1, 10, 21),
+        DateTime(2030, 1, 10, 22),
         DateTime(2030, 1, 11, 7),
         DateTime(2030, 1, 11, 22),
       ]);

@@ -6,6 +6,11 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/medicine.dart';
 import '../models/routine.dart';
 
+/// How prescriptions are interpreted. Phone Only needs no laptop, network or
+/// AI model: on-device OCR + the rule-based reader. Enhanced adds the laptop
+/// Ollama AI when it is reachable, with a disclosed phone-only fallback.
+enum ProcessingMode { phoneOnly, enhanced }
+
 /// Medicine records are stored on the phone; extraction may use the LAN laptop.
 class Store {
   static late SharedPreferences _p;
@@ -68,6 +73,23 @@ class Store {
     _writes =
         operation.then<void>((_) {}, onError: (Object _, StackTrace __) {});
     return operation;
+  }
+
+  static ProcessingMode get processingMode {
+    try {
+      return _p.getString('processing_mode') == 'enhanced'
+          ? ProcessingMode.enhanced
+          : ProcessingMode.phoneOnly;
+    } catch (_) {
+      return ProcessingMode.phoneOnly;
+    }
+  }
+
+  static Future<void> setProcessingMode(ProcessingMode mode) async {
+    if (!await _p.setString('processing_mode',
+        mode == ProcessingMode.enhanced ? 'enhanced' : 'phone')) {
+      throw StateError('The processing mode could not be saved.');
+    }
   }
 
   // Follow-up reminders: on by default, 30 minutes (disclosed in Settings).

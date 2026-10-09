@@ -15,7 +15,9 @@ import '../ui/components.dart';
 import '../ui/format.dart';
 import 'confirm_screen.dart';
 import '../services/dose_status.dart';
+import '../services/scan_control.dart';
 import '../ui/dose_widgets.dart';
+import '../ui/scan_progress.dart';
 import '../ui/routine_suggestion.dart';
 import 'calendar_screen.dart';
 import 'edit_schedule_screen.dart';
@@ -35,6 +37,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _processing = false;
   bool _checkingReminders = false;
   String? _notice;
+  int _tab = 0; // 0 Home, 1 Calendar, 2 Medications
   Timer? _clockRefresh;
 
   @override
@@ -109,17 +112,41 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<T> _withLoading<T>(
-      String title, String message, Future<T> Function() action) async {
+  /// Runs a scan behind a cancelable progress dialog. Returns null when the
+  /// user cancelled: the app is usable again immediately, network requests
+  /// are aborted, and any late result is discarded (never saved).
+  Future<ParseResult?> _runScan(
+      String title, Future<ParseResult> Function(ScanControl) work) async {
     final navigator = Navigator.of(context, rootNavigator: true);
-    final route = DialogRoute<void>(
+    final stage = ValueNotifier<String>('Starting…');
+    final cancelled = Completer<ParseResult?>();
+    final control = ScanControl(onStage: (text) => stage.value = text);
+    late final DialogRoute<void> route;
+    route = DialogRoute<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => ProcessingDialog(title: title, message: message),
+      builder: (_) => ScanProgressDialog(
+        title: title,
+        stage: stage,
+        message: Store.processingMode == ProcessingMode.enhanced
+            ? 'Using the laptop AI (Ollama) if it is reachable; otherwise '
+                "this phone's rule-based reader."
+            : 'Phone only: text recognition and reading happen on this phone.',
+        onCancel: () {
+          control.cancel();
+          if (!cancelled.isCompleted) cancelled.complete(null);
+        },
+      ),
     );
     unawaited(navigator.push<void>(route));
     try {
-      return await action();
+      final result = await Future.any<ParseResult?>([
+        work(control).then<ParseResult?>((r) => r,
+            onError: (Object e) =>
+                e is ScanCancelled ? null : Future<ParseResult?>.error(e)),
+        cancelled.future,
+      ]);
+      return control.isCancelled ? null : result;
     } finally {
       if (route.isActive) navigator.removeRoute(route);
     }
@@ -133,19 +160,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           source: source, imageQuality: 85, maxWidth: 1600, maxHeight: 1600);
       if (picked == null || !mounted) return;
       var text = '';
-      final result = await _withLoading(
-        'Reading your prescription…',
-        'Text is recognized on this phone. If your laptop AI (Ollama) is '
-            'connected, it interprets the prescription. This can take 1–2 minutes.',
-        () async {
-          try {
-            text = await Ocr.read(picked.path);
-          } catch (_) {
-            // Vision extraction can still work; no prescription/error logging.
-          }
-          return RxParser.parseImage(picked.path, text);
-        },
-      );
+      final result =
+          await _runScan('Reading your prescription', (control) async {
+        control.stage('Reading text on this phone (ML Kit)');
+        var ocrFailed = false;
+        try {
+          text = await Ocr.read(picked.path);
+        } catch (_) {
+          // Reported separately from "no text"; contents are never logged.
+          ocrFailed = true;
+        }
+        control.check();
+        return RxParser.parseImage(picked.path, text,
+            ocrFailed: ocrFailed, control: control);
+      });
+      if (result == null) {
+        _snack('Scan cancelled. Nothing was saved.');
+        return;
+      }
       if (mounted) await _openConfirm(result, text);
     } catch (_) {
       _snack(
@@ -153,6 +185,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           retry: () => unawaited(_scan(source)));
     } finally {
       if (mounted) setState(() => _processing = false);
+      _startPendingRetry();
+    }
+  }
+
+  ScanRetry? _pendingRetry;
+
+  /// Starts a retake/type requested from the review screen, after the
+  /// previous scan has fully finished (prevents duplicate processing).
+  void _startPendingRetry() {
+    final retry = _pendingRetry;
+    _pendingRetry = null;
+    if (retry == null || !mounted) return;
+    switch (retry) {
+      case ScanRetry.photo:
+        unawaited(_scan(ImageSource.camera));
+      case ScanRetry.type:
+        unawaited(_typeRx());
     }
   }
 
@@ -192,11 +241,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         ),
       );
       if (text == null || text.trim().isEmpty || !mounted) return;
-      final result = await _withLoading(
-          'Reading the prescription text…',
-          'Using the laptop AI if it is connected, otherwise the offline '
-              'reader on this phone.',
-          () => RxParser.parse(text));
+      final result = await _runScan('Reading the prescription text',
+          (control) => RxParser.parse(text, control: control));
+      if (result == null) {
+        _snack('Reading cancelled. Nothing was saved.');
+        return;
+      }
       if (mounted) await _openConfirm(result, text);
     } catch (_) {
       _snack('Reading did not finish. Please try again.',
@@ -204,14 +254,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } finally {
       ctrl.dispose();
       if (mounted) setState(() => _processing = false);
+      _startPendingRetry();
     }
   }
 
   Future<void> _openConfirm(ParseResult result, String rawText) async {
-    final saved = await Navigator.push<List<Medicine>>(
+    final outcome0 = await Navigator.push<Object?>(
         context,
         MaterialPageRoute(
             builder: (_) => ConfirmScreen(result: result, rawText: rawText)));
+    if (outcome0 is ScanRetry) {
+      _pendingRetry = outcome0;
+      return;
+    }
+    final saved = outcome0 is List<Medicine> ? outcome0 : null;
     if (!mounted || saved == null || saved.isEmpty) return;
     // Preserve the reviewed start, end and interval anchor.
     await Scheduler.requestPermissions();
@@ -237,25 +293,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         takenMedicine: value ? target : null, takenDose: value ? dose : null);
     if (result != null && !result.success) {
       _snack(result.message ?? 'The change could not be completed.');
-    }
-  }
-
-  Future<void> _testReminder() async {
-    if (_saving) return;
-    setState(() => _saving = true);
-    try {
-      await Scheduler.requestPermissions();
-      final result =
-          await Scheduler.testInOneMinute(_meds.isEmpty ? null : _meds.first);
-      _snack(result.success
-          ? result.message ??
-              'Test reminder set. It should appear in about 1 minute.'
-          : result.message ?? 'The test reminder could not be set.');
-      if (mounted) setState(() => _notice = result.message);
-    } catch (_) {
-      _snack('The test reminder could not be set. Check Android settings.');
-    } finally {
-      if (mounted) setState(() => _saving = false);
     }
   }
 
@@ -319,18 +356,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     await _applyRevised([revised], 'Schedule updated. Reminders were reset.');
   }
 
-  Future<void> _openCalendar() async {
-    await Navigator.push<void>(
-        context,
-        MaterialPageRoute(
-            builder: (_) => CalendarScreen(
-                  medicines: () => _meds,
-                  isBusy: () => _saving,
-                  onTake: _take,
-                )));
-    if (mounted) setState(() {});
-  }
-
   void _pickSource() {
     showModalBottomSheet(
         context: context,
@@ -364,159 +389,201 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
-    final todayDoses = DoseTracking.dosesOn(_meds, now);
-    final lowStock = _meds.where(
-        (m) => m.needsRefill && !m.isFinished && (m.daysLeft ?? 99) <= 3);
     final textTheme = Theme.of(context).textTheme;
+    final scanBar = _tab == 0 && _meds.isNotEmpty;
 
-    return Scaffold(
-      appBar: AppBar(
-        // Scales down on narrow phones so the action icons always fit.
-        title: const FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: IMedsULogo(fontSize: 26)),
-        actions: [
-          IconButton(
-              tooltip: 'My Daily Routine',
-              icon: const Icon(Icons.wb_twilight),
-              onPressed: _saving ? null : _openRoutine),
-          IconButton(
-              tooltip: 'Send a test reminder in 1 minute',
-              icon: const Icon(Icons.notifications_active_outlined),
-              onPressed: _saving ? null : _testReminder),
-          IconButton(
-              tooltip: 'Settings',
-              icon: const Icon(Icons.settings_outlined),
-              onPressed: () => Navigator.push(context,
-                  MaterialPageRoute(builder: (_) => const SettingsScreen()))),
-          const SizedBox(width: 4),
-        ],
-      ),
-      // A fixed bar (not a floating button) so it never covers a card or
-      // its Mark as Taken / Undo actions.
-      bottomNavigationBar: _meds.isEmpty
-          ? null
-          : Material(
+    // Back on Calendar/Medications returns to Home instead of leaving.
+    return PopScope(
+      canPop: _tab == 0,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) setState(() => _tab = 0);
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          // Scales down on narrow phones so the action icons always fit.
+          title: const FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: IMedsULogo(fontSize: 26)),
+          actions: [
+            IconButton(
+                tooltip: 'Settings',
+                icon: const Icon(Icons.settings_outlined),
+                onPressed: _openSettings),
+            const SizedBox(width: 4),
+          ],
+        ),
+        bottomNavigationBar: Column(mainAxisSize: MainAxisSize.min, children: [
+          // A fixed bar (not a floating button) so it never covers a card or
+          // its Mark as Taken / Undo actions.
+          if (scanBar)
+            Material(
               color: AppColors.surface,
-              elevation: 8,
-              child: SafeArea(
-                top: false,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: FilledButton.icon(
-                        onPressed: _canScan ? _pickSource : null,
-                        icon: const Icon(Icons.document_scanner_outlined),
-                        label: const Text(AppStrings.scanPrescription)),
-                  ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                      onPressed: _canScan ? _pickSource : null,
+                      icon: const Icon(Icons.document_scanner_outlined),
+                      label: const Text(AppStrings.scanPrescription)),
                 ),
               ),
             ),
-      body: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-          children: [
-            Text(Fmt.longDate(now),
-                style: textTheme.bodyLarge
-                    ?.copyWith(color: AppColors.textSecondary)),
-            if (_saving) ...[
-              const SizedBox(height: 8),
-              const LinearProgressIndicator(),
+          NavigationBar(
+            selectedIndex: _tab,
+            onDestinationSelected: (index) => setState(() => _tab = index),
+            destinations: const [
+              NavigationDestination(
+                  icon: Icon(Icons.home_outlined),
+                  selectedIcon: Icon(Icons.home),
+                  label: 'Home'),
+              NavigationDestination(
+                  icon: Icon(Icons.calendar_month_outlined),
+                  selectedIcon: Icon(Icons.calendar_month),
+                  label: 'Calendar'),
+              NavigationDestination(
+                  icon: Icon(Icons.medication_outlined),
+                  selectedIcon: Icon(Icons.medication),
+                  label: 'Medications'),
             ],
-            if (_notice != null)
-              InfoBanner(
-                tone: Store.loadError != null ? Tone.error : Tone.warning,
-                message: _notice,
-                action: Store.loadError != null
-                    ? null
-                    : Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton(
-                            onPressed: _saving
-                                ? null
-                                : () async {
-                                    await Scheduler.requestPermissions();
-                                    await _refreshReminders();
-                                  },
-                            child: const Text('Check Reminders Again')),
-                      ),
-              ),
-            if (Store.routine == null && Store.loadError == null)
-              InfoBanner(
-                tone: Tone.info,
-                title: 'My Daily Routine',
-                message: 'Set your usual wake-up, meal and bed times to get '
-                    'reminder suggestions that fit your day.',
-                action: Align(
-                  alignment: Alignment.centerLeft,
-                  child: TextButton.icon(
-                      onPressed: _saving ? null : _openRoutine,
-                      icon: const Icon(Icons.wb_twilight),
-                      label: const Text('Set Up My Daily Routine')),
-                ),
-              ),
-            if (_meds.isEmpty)
-              EmptyState(
-                leading: Container(
-                  width: 96,
-                  height: 96,
-                  decoration: const BoxDecoration(
-                      color: AppColors.primaryLight, shape: BoxShape.circle),
-                  alignment: Alignment.center,
-                  child: const CapsuleMark(size: 56),
-                ),
-                title: 'Welcome to IMedsU',
-                message: '${AppStrings.tagline}\n\n'
-                    'Scan a prescription or pharmacy label. You will review '
-                    'every detail before any reminder is set.',
-                action: FilledButton.icon(
-                    onPressed: _canScan ? _pickSource : null,
-                    icon: const Icon(Icons.document_scanner_outlined),
-                    label: const Text(AppStrings.scanPrescription)),
-              ),
-            for (final m in lowStock)
-              InfoBanner(
-                tone: Tone.warning,
-                title: 'Running low: ${m.name}',
-                message:
-                    'About ${m.daysLeft!.clamp(0, 99).floor()} days left based '
-                    'on your stock. Please arrange a refill.',
-              ),
-            if (_meds.isNotEmpty) ...[
-              const SectionHeader("Today's Medication Schedule",
-                  icon: Icons.today_outlined),
-              DayProgressCard(
-                  counts: DoseTracking.countDay(_meds, now, now),
-                  dayLabel: 'today'),
-              Align(
-                alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                    onPressed: _saving ? null : _openCalendar,
-                    icon: const Icon(Icons.calendar_month_outlined),
-                    label: const Text('Medication Calendar')),
-              ),
-              const SizedBox(height: 4),
-              _NextDose(meds: _meds, now: now),
-              if (todayDoses.isEmpty)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Text('No doses are scheduled for today.'),
-                ),
-              for (final (m, d) in todayDoses)
-                DoseCard(
-                  medicine: m,
-                  dose: d,
-                  now: now,
-                  busy: _saving,
-                  onChanged: (value) => unawaited(_take(m, d, value)),
-                ),
-              const SectionHeader('My Medications',
-                  icon: Icons.medication_outlined),
-              for (final m in _meds) _medCard(m, now),
-            ],
-          ]),
+          ),
+        ]),
+        body: switch (_tab) {
+          1 => CalendarScreen(
+              embedded: true,
+              medicines: () => _meds,
+              isBusy: () => _saving,
+              onTake: _take,
+            ),
+          2 => _medicationsTab(now, textTheme),
+          _ => _homeTab(now, textTheme),
+        },
+      ),
     );
+  }
+
+  Widget _noticeBanner() => InfoBanner(
+        tone: Store.loadError != null ? Tone.error : Tone.warning,
+        message: _notice,
+        action: Store.loadError != null
+            ? null
+            : Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                    onPressed: _saving
+                        ? null
+                        : () async {
+                            await Scheduler.requestPermissions();
+                            await _refreshReminders();
+                          },
+                    child: const Text('Check Reminders Again')),
+              ),
+      );
+
+  Widget _homeTab(DateTime now, TextTheme textTheme) {
+    final todayDoses = DoseTracking.dosesOn(_meds, now);
+    final lowStock = _meds.where(
+        (m) => m.needsRefill && !m.isFinished && (m.daysLeft ?? 99) <= 3);
+    return ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        children: [
+          Text(Fmt.longDate(now),
+              style: textTheme.bodyLarge
+                  ?.copyWith(color: AppColors.textSecondary)),
+          if (_saving) ...[
+            const SizedBox(height: 8),
+            const LinearProgressIndicator(),
+          ],
+          if (_notice != null) _noticeBanner(),
+          if (_meds.isEmpty)
+            EmptyState(
+              leading: Container(
+                width: 96,
+                height: 96,
+                decoration: const BoxDecoration(
+                    color: AppColors.primaryLight, shape: BoxShape.circle),
+                alignment: Alignment.center,
+                child: const CapsuleMark(size: 56),
+              ),
+              title: 'Welcome to IMedsU',
+              message: '${AppStrings.tagline}\n\n'
+                  'Scan a prescription or pharmacy label. You will review '
+                  'every detail before any reminder is set.',
+              action: FilledButton.icon(
+                  onPressed: _canScan ? _pickSource : null,
+                  icon: const Icon(Icons.document_scanner_outlined),
+                  label: const Text(AppStrings.scanPrescription)),
+            ),
+          for (final m in lowStock)
+            InfoBanner(
+              tone: Tone.warning,
+              title: 'Running low: ${m.name}',
+              message:
+                  'About ${m.daysLeft!.clamp(0, 99).floor()} days left based '
+                  'on your stock. Please arrange a refill.',
+            ),
+          if (_meds.isNotEmpty) ...[
+            const SectionHeader("Today's Medication Schedule",
+                icon: Icons.today_outlined),
+            DayProgressCard(
+                counts: DoseTracking.countDay(_meds, now, now),
+                dayLabel: 'today'),
+            _NextDose(meds: _meds, now: now),
+            if (todayDoses.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text('No doses are scheduled for today.'),
+              ),
+            for (final (m, d) in todayDoses)
+              DoseCard(
+                medicine: m,
+                dose: d,
+                now: now,
+                busy: _saving,
+                onChanged: (value) => unawaited(_take(m, d, value)),
+              ),
+          ],
+        ]);
+  }
+
+  Widget _medicationsTab(DateTime now, TextTheme textTheme) =>
+      ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 24), children: [
+        if (_notice != null) _noticeBanner(),
+        if (Store.routine == null && Store.loadError == null)
+          InfoBanner(
+            tone: Tone.info,
+            title: 'My Daily Routine',
+            message: 'Set your usual wake-up, meal and bed times to get '
+                'reminder suggestions that fit your day.',
+            action: Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                  onPressed: _saving ? null : _openRoutine,
+                  icon: const Icon(Icons.wb_twilight),
+                  label: const Text('Set Up My Daily Routine')),
+            ),
+          ),
+        const SectionHeader('My Medications', icon: Icons.medication_outlined),
+        if (_meds.isEmpty)
+          EmptyState(
+            title: 'No medications yet',
+            message: 'Scan or type a prescription to add your first '
+                'medication.',
+            action: FilledButton.icon(
+                onPressed: _canScan ? _pickSource : null,
+                icon: const Icon(Icons.document_scanner_outlined),
+                label: const Text(AppStrings.scanPrescription)),
+          ),
+        for (final m in _meds) _medCard(m, now),
+      ]);
+
+  Future<void> _openSettings() async {
+    await Navigator.push<void>(
+        context,
+        MaterialPageRoute(
+            builder: (_) => SettingsScreen(onOpenRoutine: _openRoutine)));
+    if (mounted) setState(() => _meds = _snapshot());
   }
 
   Widget _medCard(Medicine m, DateTime now) {

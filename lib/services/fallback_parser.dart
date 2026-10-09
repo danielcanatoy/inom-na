@@ -106,7 +106,11 @@ class FallbackParser {
           if (nextUnclear.isNotEmpty) unclear.add(dose);
         }
       }
-      if (name != null && name.length >= 3 && !_notName.hasMatch(name)) {
+      // Table column headings such as "Strength" are never medicine names.
+      if (name != null &&
+          name.length >= 3 &&
+          !_notName.hasMatch(name) &&
+          !_headerWord.hasMatch(name)) {
         final negativeDose = match != null &&
             RegExp(r'-\s*\d').hasMatch(line.substring(0, match.end));
         current = _Draft(name, negativeDose ? '-$dose' : dose)
@@ -139,7 +143,9 @@ class FallbackParser {
   /// Words that start header lines, never medicine names.
   static final _headerWord = RegExp(
       r'^(patient|name|date|age|sex|address|doctor|dr|md|clinic|hospital|'
-      r'lic|license|ptr|s2|sample|demo|signature|rx|sig|qty|no|tel|phone)\b',
+      r'lic|license|ptr|s2|sample|demo|signature|rx|sig|qty|no|tel|phone|'
+      r'medicine|medication|strength|dose|dosage|frequency|duration|'
+      r'quantity|instructions|directions|remarks)\b',
       caseSensitive: false);
 
   /// One to three words of letters that could be an (unlisted) medicine name.
@@ -245,6 +251,10 @@ class FallbackParser {
       frequency = frequencies.single;
       times = Medicine.defaultTimes(frequency, bedtime: draft.bedtime);
     }
+    if (draft.unclearAmount) {
+      notes.add('The amount per dose was read from an unclear character '
+          '(for example "I tab"). Check it against the prescription.');
+    }
     if (draft.unclearStrength) {
       notes.add('Some characters in the strength were unclear in the scan '
           'and were read as ${draft.dose}. Check it against the '
@@ -346,6 +356,13 @@ class FallbackParser {
     }
     final stock = _stock.firstMatch(line);
     if (stock != null) draft.stock ??= int.parse(stock.group(1)!);
+    // OCR often reads "1 tab" as "I tab" / "l tab". It is read as 1 and
+    // flagged for review; never applied silently.
+    if (RegExp(r'(?:^|[\s:])[Il|]\s+(?:tabs?|tablets?|caps?|capsules?)\b')
+        .hasMatch(line)) {
+      draft.quantities.add(1);
+      draft.unclearAmount = true;
+    }
     for (final quantity in _qty.allMatches(line)) {
       final value = quantity.group(1)!;
       final parsed =
@@ -413,6 +430,7 @@ class _Draft {
   final String name;
   String dose;
   bool unclearStrength = false;
+  bool unclearAmount = false;
   final Set<int> frequencies = {};
   final Set<int> intervals = {};
   final Set<int> durations = {};

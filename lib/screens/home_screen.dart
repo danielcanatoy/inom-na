@@ -165,6 +165,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           maxHeight: 2400);
       if (picked == null || !mounted) return;
       var text = '';
+      String? lastRaw;
       final result =
           await _runScan('Reading your prescription', (control) async {
         control.stage('Reading text on this phone (ML Kit)');
@@ -174,6 +175,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           final ocr = await Ocr.read(picked.path);
           text = ocr.text;
           raw = ocr.raw;
+          lastRaw = raw;
         } catch (_) {
           // Reported separately from "no text"; contents are never logged.
           ocrFailed = true;
@@ -186,7 +188,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         _snack('Scan cancelled. Nothing was saved.');
         return;
       }
-      if (mounted) await _openConfirm(result, text);
+      if (mounted) {
+        await _openConfirm(result, text,
+            imagePath: picked.path, ocrRaw: lastRaw);
+      }
     } catch (_) {
       _snack(
           'The prescription could not be read. Try again or type it instead.',
@@ -266,11 +271,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _openConfirm(ParseResult result, String rawText) async {
+  Future<void> _openConfirm(ParseResult result, String rawText,
+      {String? imagePath, String? ocrRaw}) async {
     final outcome0 = await Navigator.push<Object?>(
         context,
         MaterialPageRoute(
-            builder: (_) => ConfirmScreen(result: result, rawText: rawText)));
+            builder: (_) => ConfirmScreen(
+                result: result,
+                rawText: rawText,
+                imagePath: imagePath,
+                ocrRaw: ocrRaw)));
     if (outcome0 is ScanRetry) {
       _pendingRetry = outcome0;
       return;

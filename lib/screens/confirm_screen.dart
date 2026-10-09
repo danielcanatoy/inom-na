@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../models/medicine.dart';
@@ -18,7 +20,19 @@ enum ScanRetry { photo, type }
 
 /// Every prescription field and the resulting schedule must be reviewed.
 class ConfirmScreen extends StatefulWidget {
-  const ConfirmScreen({super.key, required this.result, required this.rawText});
+  const ConfirmScreen({
+    super.key,
+    required this.result,
+    required this.rawText,
+    this.imagePath,
+    this.ocrRaw,
+  });
+
+  /// The temporary photo from this scan (shown only on this screen).
+  final String? imagePath;
+
+  /// ML Kit's own text order, for comparison with the processed [rawText].
+  final String? ocrRaw;
   final ParseResult result;
   final String rawText;
   @override
@@ -152,6 +166,150 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
 
   bool get _usedLaptopAi => widget.result.source != RxParser.srcOffline;
 
+  bool _showRawOcr = false;
+
+  /// Developer/tester view: the photo, ML Kit's raw text vs. the processed
+  /// (reading-order) text, what was found and what is still missing. Shown
+  /// only here; nothing is logged, uploaded or kept.
+  Widget _scanDetails(TextTheme textTheme) {
+    final image = widget.imagePath == null ? null : File(widget.imagePath!);
+    final hasRaw = widget.ocrRaw != null &&
+        widget.ocrRaw!.trim().isNotEmpty &&
+        widget.ocrRaw!.trim() != widget.rawText.trim();
+    final shown = _showRawOcr && hasRaw ? widget.ocrRaw! : widget.rawText;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (image != null && image.existsSync()) ...[
+          Text('Photo (pinch to zoom)', style: textTheme.bodySmall),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(AppTheme.radius),
+            child: SizedBox(
+              height: 260,
+              width: double.infinity,
+              child: InteractiveViewer(
+                maxScale: 5,
+                child: Image.file(image, fit: BoxFit.contain),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+        ],
+        if (hasRaw) ...[
+          SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('Processed text')),
+              ButtonSegment(value: true, label: Text('Raw ML Kit text')),
+            ],
+            selected: {_showRawOcr},
+            onSelectionChanged: (v) => setState(() => _showRawOcr = v.first),
+          ),
+          const SizedBox(height: 6),
+          Text(
+              _showRawOcr
+                  ? 'Raw: the order ML Kit returned the text in.'
+                  : 'Processed: lines regrouped in reading order (rows top '
+                      'to bottom, left to right). Used for reading.',
+              style: textTheme.bodySmall),
+        ] else
+          Text('Text that was read', style: textTheme.bodySmall),
+        const SizedBox(height: 6),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppColors.background,
+            borderRadius: BorderRadius.circular(AppTheme.radius),
+            border: Border.all(color: AppColors.divider),
+          ),
+          child: SelectableText(shown.trim().isEmpty ? '(none)' : shown),
+        ),
+        if (widget.result.diagnostics != null) ...[
+          const SizedBox(height: 6),
+          Text(widget.result.diagnostics!.summary, style: textTheme.bodySmall),
+        ],
+        const SizedBox(height: 10),
+        Text('What was found', style: textTheme.titleSmall),
+        if (_meds.isEmpty)
+          Text('No medicine identified.', style: textTheme.bodyMedium),
+        for (final m in _meds)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text(
+                '•  ${'${m.name} ${m.dose}'.trim().isEmpty ? '(no name)' : '${m.name} ${m.dose}'.trim()}: '
+                '${_errors(m).isEmpty ? 'all required fields filled' : '${_errors(m).length} field(s) still to fix'}',
+                style: textTheme.bodyMedium),
+          ),
+        if (_meds.isNotEmpty) ...[
+          const SizedBox(height: 10),
+          TextField(
+            controller: _textCtrl,
+            minLines: 3,
+            maxLines: 10,
+            decoration: const InputDecoration(
+              labelText: 'Correct the text, then read it again',
+              alignLabelWithHint: true,
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+                onPressed: _replaceFromText,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Read Corrected Text')),
+          ),
+        ],
+      ]),
+    );
+  }
+
+  /// Re-reads the corrected text on this phone and replaces the medicines
+  /// from this scan (after confirmation if any were already verified).
+  Future<void> _replaceFromText() async {
+    final result = RxParser.readOnPhone(_textCtrl.text);
+    if (result.meds.isEmpty) {
+      _message('No medicine was identified in the corrected text. Your '
+          'current medicines were kept.');
+      return;
+    }
+    if (_verified.isNotEmpty) {
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Replace the medicines found?'),
+          content: const Text('The medicines on this screen will be replaced '
+              'by the ones read from the corrected text. You will need to '
+              'verify them again.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(c, false),
+                child: const Text(AppStrings.cancel)),
+            FilledButton(
+                onPressed: () => Navigator.pop(c, true),
+                child: const Text('Replace')),
+          ],
+        ),
+      );
+      if (ok != true || !mounted) return;
+    }
+    setState(() {
+      _meds
+        ..clear()
+        ..addAll(result.meds);
+      _verified.clear();
+      _startReviewed.clear();
+      _strengthChecked.clear();
+      _expanded
+        ..clear()
+        ..addAll(result.meds.length == 1 ? {result.meds.single.id} : {});
+      _warnings
+        ..clear()
+        ..addAll(result.warnings);
+    });
+  }
+
   /// Recovery when nothing was identified: keep and show the recognized
   /// text, and offer retake, typing, re-reading and manual entry.
   List<Widget> _noMedicines(TextTheme textTheme) {
@@ -261,17 +419,11 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
           Card(
             clipBehavior: Clip.antiAlias,
             child: ExpansionTile(
-                leading: const Icon(Icons.notes_outlined),
-                title: const Text('Original text read from prescription'),
-                children: [
-                  Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: SelectableText(
-                            widget.rawText.isEmpty ? '(none)' : widget.rawText),
-                      )),
-                ]),
+                leading: const Icon(Icons.manage_search),
+                title: const Text('Scan details'),
+                subtitle: const Text('Compare your prescription with what was '
+                    'read'),
+                children: [_scanDetails(textTheme)]),
           ),
           if (_meds.isEmpty) ..._noMedicines(textTheme),
           if (_meds.isNotEmpty)

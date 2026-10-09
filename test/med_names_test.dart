@@ -63,7 +63,7 @@ void main() {
     final meds = RxParser.medsFromContent(
       '{"medicines":[{"name":"Amoxicillin","dose":"500mg","qty_per_intake":1,'
       '"times_per_day":3,"bedtime":false,"days":7,"instructions":"pagkatapos kumain","stock":21},'
-      '{"name":"Atorvastatin","dose":"20mg","times_per_day":1,"bedtime":true,"days":null},'
+      '{"name":"Atorvastatin","dose":"20mg","times_per_day":1,"bedtime":true,"days":null,"maintenance":true},'
       '{"name":"","times_per_day":2}]}',
     );
     expect(meds.length, 2);

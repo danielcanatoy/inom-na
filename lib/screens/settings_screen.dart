@@ -19,12 +19,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _test() async {
     setState(() => _busy = true);
-    await Store.setOllama(_url.text, _model.text, _vision.text);
-    final s = await RxParser.ping();
-    setState(() {
-      _busy = false;
-      _status = s;
-    });
+    try {
+      await Store.setOllama(_url.text, _model.text, _vision.text);
+      final s = await RxParser.ping();
+      if (mounted) setState(() => _status = s);
+    } on FormatException catch (e) {
+      if (mounted) setState(() => _status = e.message.toString());
+    } catch (_) {
+      if (mounted) setState(() => _status = 'Hindi na-save o nasubukan ang Local AI settings.');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _url.dispose();
+    _model.dispose();
+    _vision.dispose();
+    super.dispose();
   }
 
   @override
@@ -37,7 +50,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
           'Walang internet na kailangan.\n\n'
           'Sa laptop:  OLLAMA_HOST=0.0.0.0 ollama serve\n'
           'Hanapin ang IP ng laptop (ipconfig / ifconfig).\n'
-          'Hindi napupunta sa internet ang larawan. Sa laptop lang ito ipinapadala.',
+          'Sa lokal na IP ng laptop ipinapadala ang larawan at buong OCR text. '
+          'Gumamit ng lokal na models at pinagkakatiwalaang WiFi. '
+          'Ang http connection ay hindi encrypted.',
         ),
         const SizedBox(height: 16),
         TextField(

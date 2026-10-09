@@ -24,7 +24,7 @@ Pag-uwi galing sa doktor, nakakalimutan, nadodoble, o hindi natatapos ng pasyent
 7. **Adherence log** ("Nainom 19/21") na pwedeng ipakita sa doktor.
 
 ## Why local?
-- **Medical data ang reseta.** Hindi ito dapat umalis sa device o mapunta sa cloud.
+- **Medical data ang reseta.** Ang larawan at buong OCR text ay ipinapadala sa naka-configure na Ollama laptop sa lokal na network. Gumamit ng lokal na models at pinagkakatiwalaang WiFi; hindi encrypted ang HTTP connection. Sa phone naka-save ang gamot at checklist.
 - **Dapat gumana ang reminders kahit walang internet o load.** Ang paalala na nakadepende sa cloud ay hindi maaasahan.
 
 ## What runs locally
@@ -38,7 +38,7 @@ Pag-uwi galing sa doktor, nakakalimutan, nadodoble, o hindi natatapos ng pasyent
 | Reminders, checklist, refill alert, log | Phone (local notifications, local storage) |
 
 ## What requires internet
-- Wala sa core features. *(Kung idadagdag ang Gemini para sa paliwanag ng gamot: pangalan lang ng gamot ang ipapadala, walang pangalan ng pasyente o larawan.)*
+- Kailangan sa unang pag-download ng Flutter dependencies, OCR resources kung kailangan, at lokal na Ollama models. Walang cloud service sa core workflow. Kapag nakahanda na, phone-only OCR/fallback/checklist/reminders at laptop-connected local AI ang dalawang mode.
 
 ## Setup
 
@@ -55,11 +55,11 @@ Hanapin ang IP ng laptop (`ipconfig` / `ifconfig`), tapos ilagay sa app: Setting
 
 ### 2. Flutter app
 ```bash
-flutter create inom_na_app --org com.inomna
-# kopyahin ang lib/, test/, at pubspec.yaml dito sa bagong project
+# Sa kasalukuyang checkout; panatilihin ang android/ kasama ang native reminder bridge.
 flutter pub get
 flutter run        # sa TUNAY na Android phone, hindi emulator
-flutter test       # parser tests
+flutter analyze
+flutter test       # model, parser, persistence, review at reminder registration tests
 ```
 
 ### 3. Android config (kailangan!)
@@ -124,6 +124,9 @@ Paraan: tingnan ang [TEST_PLAN.md](TEST_PLAN.md). Totoong resulta lang ang isinu
 
 ## Hindi ito medical advice
 Tumutulong lang ang app na sundin ang bilin ng doktor. Laging may confirm screen bago gumawa ng reminder.
+
+## Saklaw ng kasalukuyang development
+Prescription scanning at verification, tamang medication scheduling, at offline reminders/checklist lamang. Walang chatbot o conversational actions sa plano. Pinananatili ang Ollama vision/text para sa prescription extraction. Tingnan ang [PHASE1_REPORT.md](PHASE1_REPORT.md) para sa baseline, mga pagbabago, limitasyon at verification commands. Hindi pa nasusubukan ang Phase 1 sa Flutter o Android sa development laptop na ito.
 
 ## Team
 - __

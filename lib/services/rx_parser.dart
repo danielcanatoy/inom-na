@@ -54,8 +54,10 @@ Keep the original written directions, including ambiguous abbreviations, in inst
 Only include instructions that are actually written. If none are written, use "".
 Missing/uncertain strength or quantity -> dose "" or qty_per_intake null, never default 1.
 Use start_date/end_date only for explicitly stated treatment dates in YYYY-MM-DD, otherwise null.
-Reply with JSON only:
-{"medicines":[{"name":"Amoxicillin","dose":"500mg","qty_per_intake":1,"frequency_type":"interval","times_per_day":null,"interval_hours":8,"times":[],"bedtime":false,"days":7,"maintenance":false,"start_date":null,"end_date":null,"instructions":"1 cap q8h x 7 days","uncertainties":[],"stock":21}]}''';
+Never output a frequency, interval, duration, strength or quantity that is not written. If not written, use null / "" / "unknown".
+A compounded preparation (several ingredients followed by "M. ft.", "mix", "q.s." or "ad") is ONE medicine: name it as written (for example the main ingredients), put the full ingredient list in instructions, and do NOT list each ingredient as a separate medicine.
+Reply with JSON only, in this format (a format only: never copy its values):
+{"medicines":[{"name":"<name as written>","dose":"<strength as written, or empty>","qty_per_intake":null,"frequency_type":"unknown","times_per_day":null,"interval_hours":null,"times":[],"bedtime":false,"days":null,"maintenance":false,"start_date":null,"end_date":null,"instructions":"<directions exactly as written, or empty>","uncertainties":[],"stock":null}]}''';
 
   static const _visionHints = '''
 The image is a photo of a prescription, often HANDWRITTEN by a Filipino doctor.
@@ -193,11 +195,19 @@ How to read it:
       null,
       text);
 
+  /// The checks applied to a laptop AI result (for tests).
+  @visibleForTesting
+  static ParseResult reviewAiResult(List<Medicine> meds, String ocrText) =>
+      _done(meds, srcVision, null, ocrText);
+
   static ParseResult _done(List<Medicine> meds, String source,
       [String? note, String? ocrText]) {
     final warnings = <String, String>{};
     final writtenMeds =
         ocrText == null ? <Medicine>[] : FallbackParser.parse(ocrText);
+    final evidence = FallbackParser.evidence(ocrText ?? '');
+    final compounded = _compounding.hasMatch(ocrText ?? '') ||
+        meds.any((m) => _vehicle.hasMatch(m.name));
     for (final m in meds) {
       // The name is kept exactly as read; close matches are only offered
       // as suggestions on the review screen (never applied automatically).
@@ -230,6 +240,9 @@ How to read it:
         }
         break;
       }
+      // An AI schedule must be supported by the text the phone actually read.
+      if (source != srcOffline) _requireEvidence(m, evidence);
+      if (compounded) _flagCompounded(m, meds.length);
       final w = [
         genericReviewNote,
         if (MedNames.reviewNote(m.name) case final nameNote?) nameNote,
@@ -251,6 +264,87 @@ How to read it:
           '${note == null ? '' : '$note\n'}The scanned text may include a medication the AI left out. Compare with the whole prescription and add anything missing.';
     }
     return ParseResult(meds, source, note, warnings);
+  }
+
+  /// Compounding directions: "M. ft. syrup", "q.s. ad 60 mL", "misce".
+  static final _compounding = RegExp(
+      r'\b(?:m\.?\s*f\.?\s*t\b|misce\b|q\.?\s*s\.?\s*ad\b|q\.\s*s\.|compounded\b)',
+      caseSensitive: false);
+
+  /// Vehicles/excipients that are never a medicine to schedule on their own.
+  static final _vehicle = RegExp(
+      r'\b(?:alcohol|flavou?red|simple\s+syrup|vehicle|distilled\s+water|q\.?\s*s\.?)\b|^\s*(?:syrup|water)\s*$',
+      caseSensitive: false);
+
+  /// Removes any AI-proposed frequency, interval, clock times or duration
+  /// that is not written in [ocrText]'s schedule facts. The proposal is kept
+  /// only as a note; the schedule must then be set by the user.
+  static void _requireEvidence(Medicine m, ScheduleEvidence e) {
+    final unsupported = <String>[];
+    switch (m.scheduleKind) {
+      case ScheduleKind.interval:
+        if (!e.intervals.contains(m.intervalHours)) {
+          unsupported.add('every ${m.intervalHours} hours');
+        }
+      case ScheduleKind.daily:
+        if (!e.perDay.contains(m.frequencyPerDay)) {
+          unsupported.add('${m.frequencyPerDay} time(s) a day');
+        }
+      case ScheduleKind.explicit:
+        if (!m.times.every(e.times.contains)) {
+          unsupported.add('times ${m.times.join(', ')}');
+        }
+      case ScheduleKind.prn:
+      case ScheduleKind.unknown:
+        break;
+    }
+    final scheduled = m.scheduleKind != ScheduleKind.prn &&
+        m.scheduleKind != ScheduleKind.unknown;
+    if (e.prn && scheduled) {
+      unsupported.add('a fixed schedule although "as needed" is written');
+    }
+    if (unsupported.isNotEmpty) {
+      m
+        ..scheduleKind = ScheduleKind.unknown
+        ..intervalHours = null
+        ..frequencyPerDay = null
+        ..times = [];
+    }
+    if (m.durationConfirmed && m.end == null) {
+      final ongoing = m.days == null;
+      if (ongoing ? !e.maintenance : !e.days.contains(m.days)) {
+        unsupported.add(ongoing ? 'ongoing use' : 'for ${m.days} days');
+        m
+          ..days = null
+          ..durationConfirmed = false;
+      }
+    }
+    if (unsupported.isEmpty) return;
+    m.reviewNotes.add('${ReviewNote.unclear} the laptop AI proposed '
+        '${unsupported.join(', ')}, but this was not found in the text read '
+        'from the photo, so it was not applied. Set it from the prescription.');
+    // Directions the AI wrote are not evidence unless the photo text has them.
+    final written = FallbackParser.evidence(m.instructions);
+    if (!e.covers(written)) {
+      m.reviewNotes.add('The AI wrote the directions "${m.instructions}", '
+          'which were not found in the text read from the photo.');
+      m.instructions = '';
+    }
+  }
+
+  /// One compounded preparation must not become several scheduled medicines.
+  static void _flagCompounded(Medicine m, int count) {
+    if (count < 2 && !_vehicle.hasMatch(m.name)) return;
+    m
+      ..scheduleKind = ScheduleKind.unknown
+      ..intervalHours = null
+      ..frequencyPerDay = null
+      ..times = [];
+    m.reviewNotes.add('${ReviewNote.unclear} this looks like ONE compounded '
+        'preparation (for example "M. ft." or "q.s." is written). Its '
+        'ingredients may be listed here as separate medicines. Keep one entry '
+        'for the preparation, remove the ingredient entries, and set its '
+        'directions from the prescription.');
   }
 
   static Future<List<Medicine>> _ollama(String model, String userContent,

@@ -61,8 +61,20 @@ class FallbackParser {
   static final _complex = RegExp(
       r'\b(alternate|every\s+other|weekly|monthly|taper|except|skip|then|every\s+(morning|evening)|tuwing\s+makalawa)\b',
       caseSensitive: false);
-  static final _unclearInterval =
-      RegExp(r'\bq\s*(?:[a-z?]+\s*h|\d+[.,]\d+\s*h)\b', caseSensitive: false);
+  static final _unclearInterval = RegExp(
+      r'\bq\s*(?:[a-z?]+\s*h|\d+[.,]\d+\s*h)\b'
+      // "every B hours", "every & hours", "every 8 hors": the interval
+      // number is unreadable; never ignore it.
+      r'|\bevery\s+(?!\d{1,3}\s*hours?\b)\S{1,3}\s*h(?:ou|o)?rs?',
+      caseSensitive: false);
+
+  /// "Colchicine D.5 mg": a medicine line whose strength is unreadable.
+  /// It starts its own medicine with a blank strength (never guessed), so
+  /// the medicine is not dropped and its directions do not leak into the
+  /// previous one.
+  static final _unreadableStrength = RegExp(
+      r'^([A-Za-z][A-Za-z\-]{3,}(?:\s+[A-Za-z][A-Za-z\-]+){0,2})\s+(\S{1,6}?)\s*(?:mg|mcg|ml|iu|ma|rng|mq)\b',
+      caseSensitive: false);
 
   static final _odAbbreviation =
       RegExp(r'\bo\.?d\.?(?![a-z])', caseSensitive: false);
@@ -76,6 +88,34 @@ class FallbackParser {
         beforeMeals: _ac.hasMatch(directions),
         afterMeals: _pc.hasMatch(directions),
       );
+
+  /// Schedule facts actually written in [text]. Used to check that an AI
+  /// result is supported by the text the phone read.
+  static ScheduleEvidence evidence(String text) {
+    final draft = _Draft('', '');
+    for (final line in text.split('\n')) {
+      if (line.trim().isNotEmpty) _apply(draft, line.trim());
+    }
+    return ScheduleEvidence(
+      intervals: draft.intervals,
+      perDay: draft.frequencies,
+      days: draft.durations,
+      times: {...draft.times},
+      prn: draft.prn,
+      maintenance: draft.maintenance,
+    );
+  }
+
+  /// A misread line starting with a word close to a listed medicine
+  /// (e.g. "Cotchicine"). The word is kept exactly as read; suggestions are
+  /// offered on the review screen, never applied.
+  static String? _nearKnownName(String line) {
+    final word =
+        RegExp(r'^([A-Za-z][A-Za-z\-]{5,})\b').firstMatch(_cleanName(line));
+    if (word == null || _headerWord.hasMatch(word[1]!)) return null;
+    final known = MedNames.check(word[1]!).status == NameStatus.known;
+    return known || MedNames.suggestions(word[1]!).isNotEmpty ? word[1] : null;
+  }
 
   static List<Medicine> parse(String text) {
     final drafts = <_Draft>[];
@@ -93,7 +133,20 @@ class FallbackParser {
       var name = match == null ? _bareName(line) : _cleanName(match.group(1)!);
       var dose = match?.group(2)?.replaceAll(' ', '') ?? '';
       var consumedNext = false;
+      String? unreadableStrength;
+      if (match == null) {
+        final garbled = _unreadableStrength.firstMatch(line);
+        if (garbled != null && !_headerWord.hasMatch(garbled.group(1)!)) {
+          name = _cleanName(garbled.group(1)!);
+          unreadableStrength =
+              line.substring(garbled.group(1)!.length, garbled.end).trim();
+        }
+      }
+      if (match == null && name == null && unreadableStrength == null) {
+        name = _nearKnownName(line);
+      }
       if (match == null &&
+          unreadableStrength == null &&
           (name != null || _plausibleName(line)) &&
           i + 1 < lines.length) {
         // Name and strength on separate lines (common in OCR layouts).
@@ -114,10 +167,16 @@ class FallbackParser {
         final negativeDose = match != null &&
             RegExp(r'-\s*\d').hasMatch(line.substring(0, match.end));
         current = _Draft(name, negativeDose ? '-$dose' : dose)
-          ..unclearStrength = unclear.isNotEmpty;
+          ..unclearStrength = unclear.isNotEmpty
+          ..unreadableStrength = unreadableStrength;
         drafts.add(current);
-        final directions =
-            match == null ? '' : line.substring(match.end).trim();
+        final directions = match == null
+            ? unreadableStrength == null
+                ? ''
+                : line
+                    .substring(_unreadableStrength.firstMatch(line)!.end)
+                    .trim()
+            : line.substring(match.end).trim();
         if (directions.isNotEmpty) _apply(current, directions);
         if (consumedNext) i++;
       } else if (current != null) {
@@ -254,6 +313,11 @@ class FallbackParser {
     if (draft.unclearAmount) {
       notes.add('The amount per dose was read from an unclear character '
           '(for example "I tab"). Check it against the prescription.');
+    }
+    if (draft.unreadableStrength != null) {
+      notes.add('The strength could not be read from the scan '
+          '("${draft.unreadableStrength}"). Enter it exactly as written on '
+          'the prescription; it was not guessed.');
     }
     if (draft.unclearStrength) {
       notes.add('Some characters in the strength were unclear in the scan '
@@ -425,11 +489,39 @@ class FallbackParser {
   }
 }
 
+/// Schedule facts found in prescription text (see [FallbackParser.evidence]).
+class ScheduleEvidence {
+  ScheduleEvidence({
+    required this.intervals,
+    required this.perDay,
+    required this.days,
+    required this.times,
+    required this.prn,
+    required this.maintenance,
+  });
+  final Set<int> intervals;
+  final Set<int> perDay;
+  final Set<int> days;
+  final Set<String> times;
+  final bool prn;
+  final bool maintenance;
+
+  /// True if every schedule fact in [other] is also in this evidence.
+  bool covers(ScheduleEvidence other) =>
+      intervals.containsAll(other.intervals) &&
+      perDay.containsAll(other.perDay) &&
+      days.containsAll(other.days) &&
+      times.containsAll(other.times) &&
+      (!other.prn || prn) &&
+      (!other.maintenance || maintenance);
+}
+
 class _Draft {
   _Draft(this.name, this.dose);
   final String name;
   String dose;
   bool unclearStrength = false;
+  String? unreadableStrength;
   bool unclearAmount = false;
   final Set<int> frequencies = {};
   final Set<int> intervals = {};

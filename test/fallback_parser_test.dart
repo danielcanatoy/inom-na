@@ -192,4 +192,45 @@ void main() {
     expect(medicine.qtyPerIntake, 0);
     expect(medicine.validationErrors(), isNotEmpty);
   });
+
+  // Phase 5A: exact OCR lines observed from real ML Kit on the Poco X7 Pro
+  // (synthetic handwriting-style images).
+  test('an unreadable strength keeps the medicine and blocks its own lines',
+      () {
+    for (final garbled in ['D.5 mg', 'O.5 mg', 'D.5 ma']) {
+      final meds = FallbackParser.parse('Amoxicillin 500 mg\n'
+          '1 cap every 8 hours x 7 days #21\n'
+          'Colchicine $garbled\n1 tab once daily #30');
+      expect(meds.map((m) => m.name), ['Amoxicillin', 'Colchicine'],
+          reason: garbled);
+      final amox = meds.first;
+      expect(amox.scheduleKind, ScheduleKind.interval);
+      expect(amox.intervalHours, 8);
+      expect(amox.stock, 21);
+      expect(amox.instructions, isNot(contains('once daily')));
+      final colch = meds.last;
+      expect(colch.dose, isEmpty, reason: 'decimal must never be guessed');
+      expect(colch.reviewNotes.join(), contains(garbled));
+      expect(colch.validationErrors(), isNotEmpty);
+      expect(colch.stock, 30);
+    }
+  });
+
+  test('an unreadable "every ? hours" interval is unresolved, not ignored', () {
+    for (final line in [
+      '1 cap every B hours x 7 days #21',
+      '1 cap every & hours x 7 days #21',
+      '1 cap every B hors x 7 days #21',
+      '1 cap every 3 hoursx 7 days #21',
+    ]) {
+      final m = FallbackParser.parse('Amoxicillin 500 mg\n$line').single;
+      expect(m.scheduleKind, ScheduleKind.unknown, reason: line);
+      expect(m.validationErrors(), isNotEmpty, reason: line);
+    }
+    final ok =
+        FallbackParser.parse('Amoxicillin 500 mg\n1 cap every 8 hours x 7 days')
+            .single;
+    expect(ok.scheduleKind, ScheduleKind.interval);
+    expect(ok.intervalHours, 8);
+  });
 }

@@ -30,7 +30,11 @@ Future<void> loadFont(String family, String path) async {
 }
 
 Future<void> render(WidgetTester tester, String name, Widget page,
-    {required double width, required double height}) async {
+    {required double width,
+    required double height,
+    Color background = Colors.white,
+    double padding = 0.06,
+    GlobalKey? cropKey}) async {
   tester.view.devicePixelRatio = 1;
   tester.view.physicalSize = Size(width, height);
   final key = GlobalKey();
@@ -39,12 +43,12 @@ Future<void> render(WidgetTester tester, String name, Widget page,
     home: RepaintBoundary(
       key: key,
       child: Material(
-        color: Colors.white,
+        color: background,
         child: Container(
-            color: Colors.white,
+            color: background,
             width: width,
             height: height,
-            padding: EdgeInsets.all(width * 0.06),
+            padding: EdgeInsets.all(width * padding),
             child: page),
       ),
     ),
@@ -57,23 +61,112 @@ Future<void> render(WidgetTester tester, String name, Widget page,
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     final out = File('build/ocr_probe/$name.png')..createSync(recursive: true);
     await out.writeAsBytes(data!.buffer.asUint8List());
+    // Pixel-identical crop of the paper region (simulates user cropping).
+    if (cropKey != null) {
+      final paper =
+          cropKey.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+      final cropped = await paper.toImage(pixelRatio: 1);
+      final bytes = await cropped.toByteData(format: ui.ImageByteFormat.png);
+      await File('build/ocr_probe/${name}_cropped.png')
+          .writeAsBytes(bytes!.buffer.asUint8List());
+    }
   });
 }
 
-Widget text(String body, {String font = 'Arial', double size = 40}) =>
+Widget text(String body,
+        {String font = 'Arial', double size = 40, Color ink = Colors.black}) =>
     Text(body,
         style: TextStyle(
-            fontFamily: font,
-            fontSize: size,
-            color: Colors.black,
-            height: 1.4));
+            fontFamily: font, fontSize: size, color: ink, height: 1.4));
+
+// Handwriting-STYLE fonts are a proxy only; they are not real handwriting.
+const sampleH = 'SAMPLE / NOT FOR MEDICAL USE\nRx\n'
+    'Amoxicillin 500 mg\n1 cap every 8 hours x 7 days  #21\n'
+    'Colchicine 0.5 mg\n1 tab once daily  #30';
+const ballpoint = Color(0xFF1F2F66);
+const paperColor = Color(0xFFF3EEE2);
+
+/// A photo-like scene: the paper on a dark desk with unrelated text around it.
+Widget scene(Widget paper, GlobalKey paperKey) => Stack(children: [
+      Positioned(
+          left: 10,
+          top: 10,
+          child: text('NOTEBOOK  2026', size: 46, ink: Colors.white70)),
+      Positioned(
+          right: 10,
+          bottom: 10,
+          child: text('Receipt TOTAL 1,250.00', size: 40, ink: Colors.white60)),
+      Center(
+        child: RepaintBoundary(
+          key: paperKey,
+          child: Container(
+              color: paperColor,
+              padding: const EdgeInsets.all(40),
+              child: paper),
+        ),
+      ),
+    ]);
 
 void main() {
   testWidgets('render synthetic prescription images', (tester) async {
     await tester.runAsync(() async {
       await loadFont('Arial', 'C:/Windows/Fonts/arial.ttf');
       await loadFont('Times', 'C:/Windows/Fonts/times.ttf');
+      await loadFont('InkFree', 'C:/Windows/Fonts/Inkfree.ttf');
+      await loadFont('SegoePrint', 'C:/Windows/Fonts/segoepr.ttf');
+      await loadFont('SegoeScript', 'C:/Windows/Fonts/segoesc.ttf');
     });
+    if (Platform.environment['PROBE_SET'] == 'compound') {
+      // A fictional compounded cough syrup: ONE preparation, PRN only.
+      const compound = 'SAMPLE / NOT FOR MEDICAL USE\nRx\n'
+          'Dextromethorphan 15 mg/5 mL\nGuaifenesin syrup 100 mg/5 mL\n'
+          'Alcohol 5%\nFlavored syrup q.s. ad 60 mL\nM. ft. syrup\n'
+          'Sig: 5 mL as needed for cough';
+      await render(tester, 'X_compound_inkfree',
+          text(compound, font: 'InkFree', size: 40, ink: ballpoint),
+          width: 1600, height: 1000, background: paperColor);
+      await render(tester, 'X_compound_print', text(compound, size: 36),
+          width: 1600, height: 1000);
+      return;
+    }
+    if (Platform.environment['PROBE_SET'] == 'handwriting') {
+      // Same content in every image so methods can be compared.
+      await render(tester, 'P_print', text(sampleH, size: 38),
+          width: 1600, height: 1000);
+      await render(tester, 'N_inkfree',
+          text(sampleH, font: 'InkFree', size: 42, ink: ballpoint),
+          width: 1600, height: 1000, background: paperColor);
+      await render(tester, 'N_segoeprint',
+          text(sampleH, font: 'SegoePrint', size: 36, ink: ballpoint),
+          width: 1600, height: 1000, background: paperColor);
+      await render(tester, 'M_script',
+          text(sampleH, font: 'SegoeScript', size: 38, ink: ballpoint),
+          width: 1600, height: 1000, background: paperColor);
+      await render(
+          tester,
+          'M_inkfree_tilt_faint',
+          Transform.rotate(
+              angle: 0.05,
+              child: text(sampleH,
+                  font: 'InkFree', size: 34, ink: const Color(0xFF6A7390))),
+          width: 1600,
+          height: 1000,
+          background: paperColor);
+      for (final (name, font, size) in [
+        ('S_print', 'Arial', 30.0),
+        ('S_inkfree', 'InkFree', 32.0),
+      ]) {
+        final key = GlobalKey();
+        await render(tester, name,
+            scene(text(sampleH, font: font, size: size, ink: ballpoint), key),
+            width: 1600,
+            height: 1200,
+            background: const Color(0xFF4A3B2E),
+            padding: 0,
+            cropKey: key);
+      }
+      return;
+    }
     await render(tester, 'A_print', text(sampleA), width: 1600, height: 900);
     await render(tester, 'B_print', text(sampleB), width: 1600, height: 900);
     await render(tester, 'C_print', text(sampleC), width: 1600, height: 900);

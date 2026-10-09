@@ -25,11 +25,13 @@ class OcrProbe {
       for (final file in files) {
         final name = file.uri.pathSegments.last;
         await _measure(name, file.path);
-        // Same image at a lower resolution, to measure the effect of size.
-        final small = await _downscale(file, 1000);
-        if (small != null) {
-          await _measure('$name@1000w', small.path);
-          small.deleteSync();
+        // Phase 5A: the same image after on-device enhancement.
+        for (final (label, contrast) in [('gray', 1.5), ('hicontrast', 3.0)]) {
+          final enhanced = await _enhance(file, contrast, label);
+          if (enhanced != null) {
+            await _measure('$name@$label', enhanced.path);
+            enhanced.deleteSync();
+          }
         }
         file.deleteSync();
       }
@@ -65,14 +67,29 @@ class OcrProbe {
     }
   }
 
-  static Future<File?> _downscale(File file, int width) async {
+  /// Grayscale + contrast stretch around mid-gray, using only dart:ui.
+  static Future<File?> _enhance(File file, double c, String label) async {
     try {
-      final codec = await ui.instantiateImageCodec(file.readAsBytesSync(),
-          targetWidth: width);
-      final frame = await codec.getNextFrame();
-      final data = await frame.image.toByteData(format: ui.ImageByteFormat.png);
+      final codec = await ui.instantiateImageCodec(file.readAsBytesSync());
+      final src = (await codec.getNextFrame()).image;
+      final o = 128 * (1 - c);
+      final r = 0.299 * c, g = 0.587 * c, b = 0.114 * c;
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(recorder).drawImage(
+          src,
+          ui.Offset.zero,
+          ui.Paint()
+            ..colorFilter = ui.ColorFilter.matrix([
+              r, g, b, 0, o, //
+              r, g, b, 0, o,
+              r, g, b, 0, o,
+              0, 0, 0, 1, 0,
+            ]));
+      final image =
+          await recorder.endRecording().toImage(src.width, src.height);
+      final data = await image.toByteData(format: ui.ImageByteFormat.png);
       if (data == null) return null;
-      final out = File('${file.path}.w$width.png');
+      final out = File('${file.path}.$label.png');
       out.writeAsBytesSync(data.buffer.asUint8List());
       return out;
     } catch (_) {

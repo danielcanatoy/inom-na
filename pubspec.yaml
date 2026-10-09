@@ -1,0 +1,25 @@
+name: inom_na
+description: "Inom Na! - Kunan ng picture ang reseta, kami na ang magpapaalala. Local AI."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  google_mlkit_text_recognition: ^0.13.0   # OCR on-device
+  image_picker: ^1.1.2                     # camera / gallery
+  http: ^1.2.2                             # tawag sa Ollama sa laptop
+  flutter_local_notifications: ^17.2.3     # offline na reminders (naka-pin sa v17, tugma ang code)
+  timezone: ^0.9.4
+  shared_preferences: ^2.3.2               # local na storage
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

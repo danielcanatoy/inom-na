@@ -7,22 +7,34 @@ import 'package:http/http.dart' as http;
 import '../models/medicine.dart';
 import 'fallback_parser.dart';
 import 'med_names.dart';
+import 'review_note.dart';
+import 'scan_control.dart';
 import 'store.dart';
 
 class ParseResult {
   ParseResult(this.meds, this.source, [this.note, this.warnings = const {}]);
   final List<Medicine> meds;
-  final String source; // tingnan ang RxParser.srcVision / srcText / srcOffline
+  final String source; // RxParser.srcVision / srcText / srcOffline
   final String? note;
-  final Map<String, String> warnings; // Medicine.id -> babala (kailangang suriin ng user)
+  final Map<String, String> warnings; // Medicine.id -> warning to review
+
+  /// Counts-only facts about how this result was produced.
+  ScanDiagnostics? diagnostics;
 }
 
-/// Pagkakasunod: (1) Ollama vision (larawan + OCR text), (2) Ollama text (OCR text),
-/// (3) offline parser sa phone. Images/text are sent to the configured local server.
+/// Order: (1) Ollama vision (image + OCR text), (2) Ollama text (OCR text),
+/// (3) offline parser on the phone. Images/text go to the configured LAN server.
 class RxParser {
-  static const srcVision = 'Local AI – binasa ang larawan (Ollama vision)';
-  static const srcText = 'Local AI – binasa ang text (Ollama)';
-  static const srcOffline = 'Offline parser (sa phone)';
+  static const srcVision =
+      'Local AI on your laptop – read the photo (Ollama vision)';
+  static const srcText = 'Local AI on your laptop – read the text (Ollama)';
+  static const srcOffline = 'Offline reader on this phone (rule-based)';
+
+  /// Added to every medicine's warnings; the review screen shows it once.
+  static const genericReviewNote =
+      'Compare the name, strength, amount, frequency, times and duration with '
+      'your prescription. A recognized name does not mean the other details '
+      'are correct.';
 
   static const _system = '''
 You read Philippine medical prescriptions and pharmacy labels. The text comes from OCR and may contain errors.
@@ -42,8 +54,10 @@ Keep the original written directions, including ambiguous abbreviations, in inst
 Only include instructions that are actually written. If none are written, use "".
 Missing/uncertain strength or quantity -> dose "" or qty_per_intake null, never default 1.
 Use start_date/end_date only for explicitly stated treatment dates in YYYY-MM-DD, otherwise null.
-Reply with JSON only:
-{"medicines":[{"name":"Amoxicillin","dose":"500mg","qty_per_intake":1,"frequency_type":"interval","times_per_day":null,"interval_hours":8,"times":[],"bedtime":false,"days":7,"maintenance":false,"start_date":null,"end_date":null,"instructions":"1 cap q8h x 7 days","uncertainties":[],"stock":21}]}''';
+Never output a frequency, interval, duration, strength or quantity that is not written. If not written, use null / "" / "unknown".
+A compounded preparation (several ingredients followed by "M. ft.", "mix", "q.s." or "ad") is ONE medicine: name it as written (for example the main ingredients), put the full ingredient list in instructions, and do NOT list each ingredient as a separate medicine.
+Reply with JSON only, in this format (a format only: never copy its values):
+{"medicines":[{"name":"<name as written>","dose":"<strength as written, or empty>","qty_per_intake":null,"frequency_type":"unknown","times_per_day":null,"interval_hours":null,"times":[],"bedtime":false,"days":null,"maintenance":false,"start_date":null,"end_date":null,"instructions":"<directions exactly as written, or empty>","uncertainties":[],"stock":null}]}''';
 
   static const _visionHints = '''
 The image is a photo of a prescription, often HANDWRITTEN by a Filipino doctor.
@@ -56,139 +70,324 @@ How to read it:
 - Use the OCR text below only as a hint; it is often wrong for handwriting. Trust the image more.
 - If a medicine is partly unreadable, retain its best reading and explicit uncertainties. Do not silently skip a visible medicine or guess medicines that are not written.''';
 
-  /// Para sa tina-type na reseta (walang larawan).
-  static Future<ParseResult> parse(String text) => _run(text, null);
+  /// Typed prescription text (no image).
+  static Future<ParseResult> parse(String text, {ScanControl? control}) =>
+      _run(text, null, control: control);
 
-  /// Para sa scan: [imagePath] = larawan, [ocrText] = nabasa ng ML Kit.
-  static Future<ParseResult> parseImage(String imagePath, String ocrText) =>
-      _run(ocrText, imagePath);
+  /// Scan: [imagePath] = photo, [ocrText] = text read by ML Kit.
+  /// [alternateText]: ML Kit's own text order, tried by the phone reader
+  /// only if [ocrText] (layout-ordered) yields no medicine.
+  static Future<ParseResult> parseImage(String imagePath, String ocrText,
+          {bool ocrFailed = false,
+          ScanControl? control,
+          String? alternateText}) =>
+      _run(ocrText, imagePath,
+          ocrFailed: ocrFailed, control: control, alternateText: alternateText);
 
-  static Future<ParseResult> _run(String text, String? imagePath) async {
+  static Future<ParseResult> _run(String text, String? imagePath,
+      {bool ocrFailed = false,
+      ScanControl? control,
+      String? alternateText}) async {
+    control?.check();
+    final result = await _interpret(text, imagePath,
+        ocrFailed: ocrFailed, control: control, alternateText: alternateText);
+    control?.check(); // A cancelled scan's late result is discarded.
+    result.diagnostics = ScanDiagnostics(
+      textLength: text.trim().length,
+      ocrFailed: ocrFailed,
+      found: result.meds.length,
+      usedLaptop: result.source != srcOffline,
+    );
+    if (kDebugMode) {
+      // Counts only: prescription contents are never logged.
+      debugPrint('IMedsU scan: mode=${Store.processingMode.name} '
+          'ocrFailed=$ocrFailed chars=${text.trim().length} '
+          'found=${result.meds.length} laptop=${result.source != srcOffline}');
+    }
+    return result;
+  }
+
+  static Future<ParseResult> _interpret(String text, String? imagePath,
+      {required bool ocrFailed,
+      ScanControl? control,
+      String? alternateText}) async {
     final hasText = text.trim().isNotEmpty;
     String? note;
-    final models = await _models();
-    if (models == null) {
-      note = 'Hindi maabot ang Ollama sa laptop, kaya offline parser ang ginamit.';
-    } else {
-      // 1. Vision: nakikita ng model ang mismong larawan (pinakamaganda sa sulat-kamay)
+    // Phone Only (default) never waits for the laptop.
+    final models = Store.processingMode == ProcessingMode.enhanced
+        ? await _modelsFor(control)
+        : null;
+    control?.check();
+    if (Store.processingMode == ProcessingMode.enhanced && models == null) {
+      note = 'The laptop AI (Ollama) could not be reached, so the rule-based '
+          'reader on this phone was used.';
+    } else if (models != null) {
+      // 1. Vision: the model sees the photo itself (best for handwriting)
       if (imagePath != null) {
         if (_has(models, Store.visionModel)) {
           try {
+            control?.stage('Reading the photo with the laptop AI (Ollama)');
             final bytes = await File(imagePath).readAsBytes();
             final meds = await _ollama(
               Store.visionModel,
-              '$_visionHints\n\nOCR text (hint only):\n${hasText ? text : '(wala)'}',
+              '$_visionHints\n\nOCR text (hint only):\n${hasText ? text : '(none)'}',
               image: base64Encode(bytes),
               timeout: const Duration(seconds: 150),
+              client: control?.client(),
             );
             if (meds.isNotEmpty) return _done(meds, srcVision, null, text);
-            note = 'Walang nakuhang gamot ang vision model sa larawan.';
+            note = 'The vision model found no medications in the photo.';
           } catch (_) {
-            note = 'Nag-error ang vision model.';
+            control?.check();
+            note = 'The vision model returned an error.';
           }
         }
       }
-      // 2. Text: OCR text lang
+      // 2. Text: OCR text only
       if (hasText && _has(models, Store.ollamaModel)) {
         try {
-          final meds = await _ollama(Store.ollamaModel, text);
+          control?.stage('Interpreting the text with the laptop AI (Ollama)');
+          final meds =
+              await _ollama(Store.ollamaModel, text, client: control?.client());
           if (meds.isNotEmpty) return _done(meds, srcText, note, text);
-          note = 'Walang nakuhang gamot ang Local AI, kaya offline parser ang ginamit.';
+          note = 'The laptop AI found no medications, so the offline reader '
+              'on this phone was used.';
         } catch (_) {
-          note = 'Nag-error ang Local AI, kaya offline parser ang ginamit.';
+          control?.check();
+          note = 'The laptop AI returned an error, so the offline reader on '
+              'this phone was used.';
         }
       }
     }
 
-    // 3. Offline parser sa phone (laging gumagana)
+    // 3. Rule-based reader on the phone (always available, no AI model).
+    control?.check();
+    control?.stage("Interpreting with this phone's rule-based reader");
     if (!hasText) {
-      return ParseResult([], srcOffline,
-          'Walang nabasang text. Subukan ulit sa mas maliwanag, o i-type na lang.');
+      return ParseResult(
+          [],
+          srcOffline,
+          ocrFailed
+              ? 'Text recognition failed on this phone. Retake the photo, '
+                  'type the prescription, or add the medicine manually.'
+              : 'No text was found in the photo. Retake it in brighter light '
+                  'with the prescription filling the frame, type the '
+                  'prescription, or add the medicine manually.');
     }
-    return _done(FallbackParser.parse(text), srcOffline, note, text);
+    var meds = FallbackParser.parse(text);
+    if (meds.isEmpty &&
+        alternateText != null &&
+        alternateText.trim().isNotEmpty &&
+        alternateText.trim() != text.trim()) {
+      meds = FallbackParser.parse(alternateText);
+    }
+    return _done(meds, srcOffline, note, text);
   }
 
-  /// Sinusuri ang bawat pangalan (maliit na typo lang ang inaayos) at nilalagyan
-  /// ng babala ang kailangang i-check ng user. [ocrText]: para sa vision lang,
-  /// para mahuli kung pinalitan/inimbento ng model ang gamot.
+  /// Checks each name (only small typos are corrected) and attaches warnings
+  /// the user must review. [ocrText] catches medicines a model replaced or
+  /// invented.
+  /// Phone-only reading of (possibly corrected) text: rule-based, instant,
+  /// no network. Used to re-read recognized text on the review screen.
+  static ParseResult readOnPhone(String text) => _done(
+      text.trim().isEmpty ? [] : FallbackParser.parse(text),
+      srcOffline,
+      null,
+      text);
+
+  /// The checks applied to a laptop AI result (for tests).
+  @visibleForTesting
+  static ParseResult reviewAiResult(List<Medicine> meds, String ocrText) =>
+      _done(meds, srcVision, null, ocrText);
+
   static ParseResult _done(List<Medicine> meds, String source,
       [String? note, String? ocrText]) {
     final warnings = <String, String>{};
-    final writtenMeds = ocrText == null ? <Medicine>[] : FallbackParser.parse(ocrText);
+    final writtenMeds =
+        ocrText == null ? <Medicine>[] : FallbackParser.parse(ocrText);
+    final evidence = FallbackParser.evidence(ocrText ?? '');
+    final compounded = _compounding.hasMatch(ocrText ?? '') ||
+        meds.any((m) => _vehicle.hasMatch(m.name));
     for (final m in meds) {
+      // The name is kept exactly as read; close matches are only offered
+      // as suggestions on the review screen (never applied automatically).
       final c = MedNames.check(m.name);
-      m.name = c.name;
       for (final written in writtenMeds) {
-        if (MedNames.check(written.name).name.toLowerCase() != m.name.toLowerCase()) continue;
+        if (MedNames.check(written.name).name.toLowerCase() !=
+            c.name.toLowerCase()) continue;
         if (m.instructions.isEmpty) m.instructions = written.instructions;
-        if (source != srcOffline && written.scheduleKind == ScheduleKind.interval &&
-            (m.scheduleKind != ScheduleKind.interval || m.intervalHours != written.intervalHours)) {
+        if (source != srcOffline &&
+            written.scheduleKind == ScheduleKind.interval &&
+            (m.scheduleKind != ScheduleKind.interval ||
+                m.intervalHours != written.intervalHours)) {
           m.scheduleKind = ScheduleKind.unknown;
-          m.reviewNotes.add('May nakasulat na pagitan ng oras sa OCR na hindi tugma sa AI. Piliin ang tamang pagitan gamit ang reseta.');
+          m.reviewNotes.add(
+              'The dose interval in the scanned text does not match the AI result. Choose the correct interval using the prescription.');
         }
-        if (source != srcOffline && written.scheduleKind == ScheduleKind.explicit &&
+        if (source != srcOffline &&
+            written.scheduleKind == ScheduleKind.explicit &&
             (m.times.length != written.times.length ||
                 !m.times.every(written.times.contains))) {
           m.scheduleKind = ScheduleKind.unknown;
-          m.reviewNotes.add('May nakasulat na oras sa OCR na hindi tugma sa AI. Suriin at itama ang mga oras.');
+          m.reviewNotes.add(
+              'The clock times in the scanned text do not match the AI result. Check and correct the times.');
         }
-        if (source != srcOffline && written.scheduleKind == ScheduleKind.unknown &&
-            written.reviewNotes.any((note) => note.contains('Magkasalungat') || note.contains('Hindi malinaw'))) {
+        if (source != srcOffline &&
+            written.scheduleKind == ScheduleKind.unknown &&
+            written.reviewNotes.any(ReviewNote.isConflictOrUnclear)) {
           m.scheduleKind = ScheduleKind.unknown;
           m.reviewNotes.addAll(written.reviewNotes);
         }
         break;
       }
+      // An AI schedule must be supported by the text the phone actually read.
+      if (source != srcOffline) _requireEvidence(m, evidence);
+      if (compounded) _flagCompounded(m, meds.length);
       final w = [
-        'Ikumpara ang pangalan, lakas, dami, dalas, oras at haba ng gamutan sa reseta. Hindi patunay ng tamang reseta ang kilalang pangalan.',
-        if (c.warning != null) c.warning!,
+        genericReviewNote,
+        if (MedNames.reviewNote(m.name) case final nameNote?) nameNote,
         ...m.reviewNotes,
         ...m.validationErrors(),
         if (ocrText != null &&
             ocrText.trim().isNotEmpty &&
             !MedNames.foundInText(m.name, ocrText))
-          "⚠️ Hindi makita sa text ng larawan ang '${m.name}'. Baka mali ang basa ng AI. "
-              'Ikumpara sa reseta.',
+          "'${m.name}' was not found in the text read from the photo. The AI "
+              'may have misread it. Compare with your prescription.',
       ];
       if (w.isNotEmpty) warnings[m.id] = w.join('\n');
     }
-    if (source != srcOffline && writtenMeds.any((written) =>
-        !meds.any((medicine) => MedNames.check(written.name).name.toLowerCase() == medicine.name.toLowerCase()))) {
-      note = '${note == null ? '' : '$note\n'}Maaaring may gamot sa OCR na hindi naisama ng AI. Ikumpara ang buong reseta at idagdag ang nawawala.';
+    if (source != srcOffline &&
+        writtenMeds.any((written) => !meds.any((medicine) =>
+            MedNames.check(written.name).name.toLowerCase() ==
+            MedNames.check(medicine.name).name.toLowerCase()))) {
+      note =
+          '${note == null ? '' : '$note\n'}The scanned text may include a medication the AI left out. Compare with the whole prescription and add anything missing.';
     }
     return ParseResult(meds, source, note, warnings);
   }
 
+  /// Compounding directions: "M. ft. syrup", "q.s. ad 60 mL", "misce".
+  static final _compounding = RegExp(
+      r'\b(?:m\.?\s*f\.?\s*t\b|misce\b|q\.?\s*s\.?\s*ad\b|q\.\s*s\.|compounded\b)',
+      caseSensitive: false);
+
+  /// Vehicles/excipients that are never a medicine to schedule on their own.
+  static final _vehicle = RegExp(
+      r'\b(?:alcohol|flavou?red|simple\s+syrup|vehicle|distilled\s+water|q\.?\s*s\.?)\b|^\s*(?:syrup|water)\s*$',
+      caseSensitive: false);
+
+  /// Removes any AI-proposed frequency, interval, clock times or duration
+  /// that is not written in [ocrText]'s schedule facts. The proposal is kept
+  /// only as a note; the schedule must then be set by the user.
+  static void _requireEvidence(Medicine m, ScheduleEvidence e) {
+    final unsupported = <String>[];
+    switch (m.scheduleKind) {
+      case ScheduleKind.interval:
+        if (!e.intervals.contains(m.intervalHours)) {
+          unsupported.add('every ${m.intervalHours} hours');
+        }
+      case ScheduleKind.daily:
+        if (!e.perDay.contains(m.frequencyPerDay)) {
+          unsupported.add('${m.frequencyPerDay} time(s) a day');
+        }
+      case ScheduleKind.explicit:
+        if (!m.times.every(e.times.contains)) {
+          unsupported.add('times ${m.times.join(', ')}');
+        }
+      case ScheduleKind.prn:
+      case ScheduleKind.unknown:
+        break;
+    }
+    final scheduled = m.scheduleKind != ScheduleKind.prn &&
+        m.scheduleKind != ScheduleKind.unknown;
+    if (e.prn && scheduled) {
+      unsupported.add('a fixed schedule although "as needed" is written');
+    }
+    if (unsupported.isNotEmpty) {
+      m
+        ..scheduleKind = ScheduleKind.unknown
+        ..intervalHours = null
+        ..frequencyPerDay = null
+        ..times = [];
+    }
+    if (m.durationConfirmed && m.end == null) {
+      final ongoing = m.days == null;
+      if (ongoing ? !e.maintenance : !e.days.contains(m.days)) {
+        unsupported.add(ongoing ? 'ongoing use' : 'for ${m.days} days');
+        m
+          ..days = null
+          ..durationConfirmed = false;
+      }
+    }
+    if (unsupported.isEmpty) return;
+    m.reviewNotes.add('${ReviewNote.unclear} the laptop AI proposed '
+        '${unsupported.join(', ')}, but this was not found in the text read '
+        'from the photo, so it was not applied. Set it from the prescription.');
+    // Directions the AI wrote are not evidence unless the photo text has them.
+    final written = FallbackParser.evidence(m.instructions);
+    if (!e.covers(written)) {
+      m.reviewNotes.add('The AI wrote the directions "${m.instructions}", '
+          'which were not found in the text read from the photo.');
+      m.instructions = '';
+    }
+  }
+
+  /// One compounded preparation must not become several scheduled medicines.
+  static void _flagCompounded(Medicine m, int count) {
+    if (count < 2 && !_vehicle.hasMatch(m.name)) return;
+    m
+      ..scheduleKind = ScheduleKind.unknown
+      ..intervalHours = null
+      ..frequencyPerDay = null
+      ..times = [];
+    m.reviewNotes.add('${ReviewNote.unclear} this looks like ONE compounded '
+        'preparation (for example "M. ft." or "q.s." is written). Its '
+        'ingredients may be listed here as separate medicines. Keep one entry '
+        'for the preparation, remove the ingredient entries, and set its '
+        'directions from the prescription.');
+  }
+
   static Future<List<Medicine>> _ollama(String model, String userContent,
-      {String? image, Duration timeout = const Duration(seconds: 90)}) async {
-    if (_cloudModel(model)) throw const FormatException('Cloud models are not permitted.');
+      {String? image,
+      Duration timeout = const Duration(seconds: 90),
+      http.Client? client}) async {
+    if (_cloudModel(model))
+      throw const FormatException('Cloud models are not permitted.');
     final endpoint = Store.localOllamaUri(Store.ollamaUrl);
-    final res = await http
-        .post(
-          endpoint.resolve('/api/chat'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'model': model,
-            'messages': [
-              {'role': 'system', 'content': _system},
-              {
-                'role': 'user',
-                'content': userContent,
-                if (image != null) 'images': [image],
-              },
-            ],
-            'format': 'json',
-            'stream': false,
-            'options': {'temperature': 0},
-          }),
-        )
-        .timeout(timeout);
-    if (res.statusCode != 200) throw Exception('Local AI request failed (${res.statusCode}).');
-    final content = (jsonDecode(res.body) as Map)['message']['content'] as String;
+    final http.Client c = client ?? http.Client();
+    final http.Response res;
+    try {
+      res = await c
+          .post(
+            endpoint.resolve('/api/chat'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'model': model,
+              'messages': [
+                {'role': 'system', 'content': _system},
+                {
+                  'role': 'user',
+                  'content': userContent,
+                  if (image != null) 'images': [image],
+                },
+              ],
+              'format': 'json',
+              'stream': false,
+              'options': {'temperature': 0},
+            }),
+          )
+          .timeout(timeout);
+    } finally {
+      if (client == null) c.close();
+    }
+    if (res.statusCode != 200)
+      throw Exception('Local AI request failed (${res.statusCode}).');
+    final content =
+        (jsonDecode(res.body) as Map)['message']['content'] as String;
     return medsFromContent(content);
   }
 
-  /// Ginagawang Medicine ang JSON na sagot ng model.
+  /// Converts the model's JSON reply into medicines.
   @visibleForTesting
   static List<Medicine> medsFromContent(String content) {
     final decoded = jsonDecode(content);
@@ -214,12 +413,14 @@ How to read it:
           if (time is String) {
             times.add(time.trim());
           } else {
-            notes.add('May hindi wastong oras mula sa AI.');
+            notes.add(
+                '${ReviewNote.invalid} the AI returned a time that is not valid.');
             invalidTimes = true;
           }
         }
       } else if (raw['times'] != null) {
-        notes.add('Hindi wastong format ng nakasulat na mga oras.');
+        notes.add(
+            '${ReviewNote.invalid} the written times are in an unreadable format.');
         invalidTimes = true;
       }
       var kind = switch (type) {
@@ -241,27 +442,40 @@ How to read it:
           kind = ScheduleKind.daily;
         }
       }
-      if (kind == ScheduleKind.daily && times.isEmpty &&
-          perDay != null && perDay > 0 && perDay <= 24) {
+      if (kind == ScheduleKind.daily &&
+          times.isEmpty &&
+          perDay != null &&
+          perDay > 0 &&
+          perDay <= 24) {
         times = Medicine.defaultTimes(perDay, bedtime: raw['bedtime'] == true);
       }
-      if (kind == ScheduleKind.explicit && perDay != null && perDay != times.length) {
+      if (kind == ScheduleKind.explicit &&
+          perDay != null &&
+          perDay != times.length) {
         kind = ScheduleKind.unknown;
-        notes.add('Hindi tugma ang nakasulat na oras at dalas.');
+        notes.add(
+            '${ReviewNote.mismatch} the written times do not match the frequency.');
       }
       if (invalidTimes) kind = ScheduleKind.unknown;
       final days = _int(raw['days']);
       final endDate = _date(raw['end_date']);
       // A prescribed calendar end date includes that day; the model bound is exclusive.
-      final end = endDate == null ? null : DateTime(endDate.year, endDate.month, endDate.day + 1);
+      final end = endDate == null
+          ? null
+          : DateTime(endDate.year, endDate.month, endDate.day + 1);
       final maintenance = raw['maintenance'] == true;
-      final invalidDuration = (raw['days'] != null && (days == null || days <= 0)) ||
-          (raw['end_date'] != null && end == null);
-      final durationConflict = (maintenance && (raw['days'] != null || end != null)) ||
-          (days != null && end != null);
-      if (durationConflict) notes.add('Magkasalungat ang haba ng gamutan.');
-      if (raw['days'] != null && days == null) notes.add('Hindi malinaw ang haba ng gamutan.');
-      if (raw['end_date'] != null && end == null) notes.add('Hindi wastong petsa ng pagtatapos.');
+      final invalidDuration =
+          (raw['days'] != null && (days == null || days <= 0)) ||
+              (raw['end_date'] != null && end == null);
+      final durationConflict =
+          (maintenance && (raw['days'] != null || end != null)) ||
+              (days != null && end != null);
+      if (durationConflict) notes.add(ReviewNote.durationConflict);
+      if (raw['days'] != null && days == null)
+        notes.add(
+            '${ReviewNote.unclear} the treatment duration could not be read.');
+      if (raw['end_date'] != null && end == null)
+        notes.add('${ReviewNote.invalid} the end date is not a valid date.');
       final medicine = Medicine(
         id: '${Medicine.newId()}${out.length}',
         name: name,
@@ -273,7 +487,8 @@ How to read it:
         times: times,
         days: durationConflict ? null : days,
         end: end,
-        durationConfirmed: !durationConflict && !invalidDuration &&
+        durationConfirmed: !durationConflict &&
+            !invalidDuration &&
             ((days != null && days > 0) || end != null || maintenance),
         instructions: _text(raw['instructions']),
         stock: _int(raw['stock']),
@@ -290,49 +505,64 @@ How to read it:
 
   static int? _int(Object? value) {
     if (value is num) {
-      return value.isFinite && value == value.truncateToDouble() ? value.toInt() : null;
+      return value.isFinite && value == value.truncateToDouble()
+          ? value.toInt()
+          : null;
     }
     return value is String ? int.tryParse(value.trim()) : null;
   }
 
   static double? _num(Object? value) {
-    final parsed = value is num ? value.toDouble() :
-        value is String ? double.tryParse(value.trim()) : null;
+    final parsed = value is num
+        ? value.toDouble()
+        : value is String
+            ? double.tryParse(value.trim())
+            : null;
     return parsed != null && parsed.isFinite ? parsed : null;
   }
 
   static DateTime? _date(Object? value) {
-    if (value is! String || !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value)) return null;
+    if (value is! String || !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(value))
+      return null;
     final parsed = DateTime.tryParse(value);
-    if (parsed == null || '${parsed.year.toString().padLeft(4, '0')}-${parsed.month.toString().padLeft(2, '0')}-${parsed.day.toString().padLeft(2, '0')}' != value) return null;
+    if (parsed == null ||
+        '${parsed.year.toString().padLeft(4, '0')}-${parsed.month.toString().padLeft(2, '0')}-${parsed.day.toString().padLeft(2, '0')}' !=
+            value) return null;
     return parsed;
   }
 
   /// A model must not erase an interval or an obvious conflict in its own directions.
   static void _checkWrittenDirections(Medicine medicine) {
     if (medicine.instructions.isEmpty) return;
-    final written = FallbackParser.parse('Prescription 1mg\n${medicine.instructions}').first;
+    final written =
+        FallbackParser.parse('Prescription 1mg\n${medicine.instructions}')
+            .first;
     medicine.reviewNotes.addAll(written.reviewNotes);
     if (written.scheduleKind == ScheduleKind.unknown &&
-        written.reviewNotes.any((note) => note.contains('Magkasalungat') || note.contains('Hindi tugma') || note.contains('hindi wastong') || note.contains('Hindi malinaw'))) {
+        written.reviewNotes.any(ReviewNote.blocksSchedule)) {
       medicine.scheduleKind = ScheduleKind.unknown;
     } else if (written.scheduleKind == ScheduleKind.interval) {
-      if (medicine.intervalHours != null && medicine.intervalHours != written.intervalHours) {
+      if (medicine.intervalHours != null &&
+          medicine.intervalHours != written.intervalHours) {
         medicine.scheduleKind = ScheduleKind.unknown;
-        medicine.reviewNotes.add('Hindi tugma ang pagitan ng oras at nakasulat na direksyon.');
+        medicine.reviewNotes.add(
+            '${ReviewNote.mismatch} the dose interval does not match the written directions.');
       } else {
         final alreadyInterval = medicine.scheduleKind == ScheduleKind.interval;
         medicine.scheduleKind = ScheduleKind.interval;
         medicine.intervalHours = written.intervalHours;
-        if (written.times.isNotEmpty || !alreadyInterval) medicine.times = written.times;
+        if (written.times.isNotEmpty || !alreadyInterval)
+          medicine.times = written.times;
       }
     } else if (written.scheduleKind == ScheduleKind.prn) {
       medicine.scheduleKind = ScheduleKind.prn;
       medicine.intervalHours = written.intervalHours;
     } else if (written.scheduleKind == ScheduleKind.explicit) {
-      if (medicine.frequencyPerDay != null && medicine.frequencyPerDay != written.times.length) {
+      if (medicine.frequencyPerDay != null &&
+          medicine.frequencyPerDay != written.times.length) {
         medicine.scheduleKind = ScheduleKind.unknown;
-        medicine.reviewNotes.add('Hindi tugma ang nakasulat na oras at dalas.');
+        medicine.reviewNotes.add(
+            '${ReviewNote.mismatch} the written times do not match the frequency.');
       } else {
         medicine.scheduleKind = ScheduleKind.explicit;
         medicine.times = written.times;
@@ -342,26 +572,31 @@ How to read it:
       if (medicine.scheduleKind == ScheduleKind.daily &&
           medicine.frequencyPerDay != written.frequencyPerDay) {
         medicine.scheduleKind = ScheduleKind.unknown;
-        medicine.reviewNotes.add('Hindi tugma ang dalas at nakasulat na direksyon.');
+        medicine.reviewNotes.add(
+            '${ReviewNote.mismatch} the frequency does not match the written directions.');
       } else if (medicine.scheduleKind == ScheduleKind.unknown) {
         medicine.scheduleKind = ScheduleKind.daily;
         medicine.frequencyPerDay = written.frequencyPerDay;
         medicine.times = written.times;
       }
     }
-    if (written.qtyPerIntake > 0 && medicine.qtyPerIntake > 0 &&
+    if (written.qtyPerIntake > 0 &&
+        medicine.qtyPerIntake > 0 &&
         medicine.qtyPerIntake != written.qtyPerIntake) {
       medicine.qtyPerIntake = 0;
-      medicine.reviewNotes.add('Hindi tugma ang dami sa bawat inom at nakasulat na direksyon.');
+      medicine.reviewNotes.add(
+          '${ReviewNote.mismatch} the amount per dose does not match the written directions.');
     }
-    if (written.reviewNotes.any((note) => note.contains('Magkasalungat ang haba'))) {
+    if (written.reviewNotes.any(ReviewNote.isDurationConflict)) {
       medicine.durationConfirmed = false;
     }
-    if (written.durationConfirmed && medicine.end == null &&
-        !medicine.reviewNotes.any((note) => note.contains('Magkasalungat ang haba'))) {
+    if (written.durationConfirmed &&
+        medicine.end == null &&
+        !medicine.reviewNotes.any(ReviewNote.isDurationConflict)) {
       if (medicine.durationConfirmed && medicine.days != written.days) {
         medicine.durationConfirmed = false;
-        medicine.reviewNotes.add('Hindi tugma ang haba ng gamutan at nakasulat na direksyon.');
+        medicine.reviewNotes.add(
+            '${ReviewNote.mismatch} the treatment duration does not match the written directions.');
       } else if (!medicine.durationConfirmed) {
         medicine.days = written.days;
         medicine.durationConfirmed = true;
@@ -369,10 +604,16 @@ How to read it:
     }
   }
 
-  /// Listahan ng models sa Ollama, o null kung hindi maabot (mabilis, 4 seconds).
-  static Future<List<String>?> _models() async {
+  /// Models available on Ollama, or null if unreachable (4-second timeout).
+  static Future<List<String>?> _modelsFor(ScanControl? control) async {
+    control?.stage('Connecting to the laptop AI (Ollama)');
+    return _models(client: control?.client());
+  }
+
+  static Future<List<String>?> _models({http.Client? client}) async {
+    final http.Client c = client ?? http.Client();
     try {
-      final res = await http
+      final res = await c
           .get(Store.localOllamaUri(Store.ollamaUrl).resolve('/api/tags'))
           .timeout(const Duration(seconds: 4));
       if (res.statusCode != 200) return null;
@@ -381,25 +622,32 @@ How to read it:
           .toList();
     } catch (_) {
       return null;
+    } finally {
+      if (client == null) c.close();
     }
   }
 
   static bool _has(List<String> models, String name) =>
-      name.isNotEmpty && !_cloudModel(name) &&
+      name.isNotEmpty &&
+      !_cloudModel(name) &&
       (models.contains(name) || models.contains('$name:latest'));
 
   static bool _cloudModel(String name) =>
       RegExp(r'(^|[:/\-])cloud($|[:/\-])', caseSensitive: false).hasMatch(name);
 
-  /// Para sa settings: naka-on ba ang Ollama at nandiyan ang mga model?
+  static const pingConnected = 'Connected to Ollama on your laptop.';
+
+  /// For Settings: is Ollama reachable and are the configured models installed?
   static Future<String> ping() async {
     final models = await _models();
     if (models == null) {
-      return '❌ Hindi maabot. Tingnan ang IP at kung naka-OLLAMA_HOST=0.0.0.0.';
+      return 'Not connected. Check the laptop IP address and that Ollama runs '
+          'with OLLAMA_HOST=0.0.0.0 on the same Wi-Fi or hotspot.';
     }
-    String line(String label, String m) =>
-        _has(models, m) ? '✅ $label: $m' : '⚠️ $label: wala ang "$m"';
-    return 'Konektado.\n${line('Text', Store.ollamaModel)}\n${line('Vision', Store.visionModel)}'
-        '\nMeron: ${models.join(', ')}';
+    String line(String label, String m) => _has(models, m)
+        ? '$label model: $m (installed)'
+        : '$label model: "$m" is not installed';
+    return '$pingConnected\n${line('Text', Store.ollamaModel)}\n${line('Vision', Store.visionModel)}'
+        '\nAvailable: ${models.isEmpty ? '(none)' : models.join(', ')}';
   }
 }

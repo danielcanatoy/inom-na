@@ -6,7 +6,8 @@ import 'package:inom_na/services/fallback_parser.dart';
 
 void main() {
   test('Antibiotic na may araw at bilang', () {
-    final m = FallbackParser.parse('Amoxicillin 500mg\n1 cap TID x 7 days #21').single;
+    final m = FallbackParser.parse('Amoxicillin 500mg\n1 cap TID x 7 days #21')
+        .single;
     expect(m.name, 'Amoxicillin');
     expect(m.dose, '500mg');
     expect(m.timesPerDay, 3);
@@ -21,14 +22,16 @@ void main() {
   });
 
   test('q8h preserves a fixed eight-hour interval', () {
-    final m = FallbackParser.parse('Cefalexin 500 mg 1 cap q8h for 1 week').single;
+    final m =
+        FallbackParser.parse('Cefalexin 500 mg 1 cap q8h for 1 week').single;
     expect(m.timesPerDay, 3);
     expect(m.days, 7);
     expect(m.scheduleKind, ScheduleKind.interval);
     expect(m.intervalHours, 8);
     final doses = m.allDoses(horizon: m.start.add(const Duration(days: 2)));
     for (var index = 1; index < doses.length; index++) {
-      expect(doses[index].difference(doses[index - 1]), const Duration(hours: 8));
+      expect(
+          doses[index].difference(doses[index - 1]), const Duration(hours: 8));
     }
   });
 
@@ -38,12 +41,14 @@ void main() {
   });
 
   test('PRN walang paalala', () {
-    final m = FallbackParser.parse('Paracetamol 500mg 1 tab q4h PRN for fever').single;
+    final m = FallbackParser.parse('Paracetamol 500mg 1 tab q4h PRN for fever')
+        .single;
     expect(m.isPrn, isTrue);
   });
 
   test('Kalahating tableta, bago kumain', () {
-    final m = FallbackParser.parse('Metformin 500mg 1/2 tab BID before meals').single;
+    final m =
+        FallbackParser.parse('Metformin 500mg 1/2 tab BID before meals').single;
     expect(m.qtyPerIntake, 0.5);
     expect(m.timesPerDay, 2);
     expect(m.instructions, contains('before meals'));
@@ -72,94 +77,160 @@ void main() {
   });
 
   test('known bare name does not establish dose correctness', () {
-    final medicine = FallbackParser.parse('Losartan\n1 tab OD maintenance').single;
+    final medicine =
+        FallbackParser.parse('Losartan\n1 tab OD maintenance').single;
     expect(medicine.dose, isEmpty);
     expect(medicine.validationErrors(), isNotEmpty);
   });
 
   test('continue alone does not establish maintenance', () {
-    final medicine = FallbackParser.parse('Losartan 50mg 1 tab OD continue').single;
+    final medicine =
+        FallbackParser.parse('Losartan 50mg 1 tab OD continue').single;
     expect(medicine.durationConfirmed, isFalse);
     expect(medicine.isMaintenance, isFalse);
     expect(medicine.instructions, contains('continue'));
   });
 
   test('daily frequency remains separate from fixed intervals', () {
-    final medicine = FallbackParser.parse('Amoxicillin 500mg 1 cap TID x 7 days').single;
+    final medicine =
+        FallbackParser.parse('Amoxicillin 500mg 1 cap TID x 7 days').single;
     expect(medicine.scheduleKind, ScheduleKind.daily);
     expect(medicine.frequencyPerDay, 3);
     expect(medicine.intervalHours, isNull);
   });
 
   test('q6h does not use unequal QID times', () {
-    final medicine = FallbackParser.parse('Cefalexin 500mg 1 cap q6h for 2 days').single;
+    final medicine =
+        FallbackParser.parse('Cefalexin 500mg 1 cap q6h for 2 days').single;
     expect(medicine.scheduleKind, ScheduleKind.interval);
     expect(medicine.intervalHours, 6);
     expect(medicine.times, isEmpty);
   });
 
   test('written 24-hour and am/pm times are preserved', () {
-    final medicine = FallbackParser.parse('Losartan 50mg 1 tab at 07:30 and 7:30 pm for 3 days').single;
+    final medicine = FallbackParser.parse(
+            'Losartan 50mg 1 tab at 07:30 and 7:30 pm for 3 days')
+        .single;
     expect(medicine.scheduleKind, ScheduleKind.explicit);
     expect(medicine.times, ['07:30', '19:30']);
   });
 
   test('duplicate times fail schedule validation', () {
-    final medicine = FallbackParser.parse('Losartan 50mg 1 tab at 08:00 and 08:00 maintenance').single;
+    final medicine = FallbackParser.parse(
+            'Losartan 50mg 1 tab at 08:00 and 08:00 maintenance')
+        .single;
     expect(medicine.scheduleErrors(), isNotEmpty);
   });
 
   test('invalid clock time does not fall back to a daily schedule', () {
-    final medicine = FallbackParser.parse('Losartan 50mg 1 tab OD at 25:00 maintenance').single;
+    final medicine =
+        FallbackParser.parse('Losartan 50mg 1 tab OD at 25:00 maintenance')
+            .single;
     expect(medicine.scheduleKind, ScheduleKind.unknown);
     expect(medicine.scheduleErrors(), isNotEmpty);
   });
 
   test('contradictory intervals and frequencies remain unresolved', () {
-    final medicine = FallbackParser.parse('Amoxicillin 500mg 1 cap BID q8h x 7 days').single;
+    final medicine =
+        FallbackParser.parse('Amoxicillin 500mg 1 cap BID q8h x 7 days').single;
     expect(medicine.scheduleKind, ScheduleKind.unknown);
     expect(medicine.instructions, contains('BID q8h'));
   });
 
   test('ambiguous timing directions remain visible and unresolved', () {
-    final medicine = FallbackParser.parse('Losartan 50mg 1 tab daily except Sunday maintenance').single;
+    final medicine = FallbackParser.parse(
+            'Losartan 50mg 1 tab daily except Sunday maintenance')
+        .single;
     expect(medicine.scheduleKind, ScheduleKind.unknown);
     expect(medicine.instructions, contains('except Sunday'));
   });
 
   test('contradictory duration cannot silently become maintenance', () {
-    final medicine = FallbackParser.parse('Losartan 50mg 1 tab OD x 7 days maintenance').single;
+    final medicine =
+        FallbackParser.parse('Losartan 50mg 1 tab OD x 7 days maintenance')
+            .single;
     expect(medicine.durationConfirmed, isFalse);
     expect(medicine.isMaintenance, isFalse);
   });
 
   test('conflicting quantity remains unresolved', () {
-    final medicine = FallbackParser.parse('Losartan 50mg\n1 tab OD\n2 tabs maintenance').single;
+    final medicine =
+        FallbackParser.parse('Losartan 50mg\n1 tab OD\n2 tabs maintenance')
+            .single;
     expect(medicine.qtyPerIntake, 0);
     expect(medicine.validationErrors(), isNotEmpty);
   });
 
   test('written clock times conflicting with q8h require resolution', () {
-    final medicine = FallbackParser.parse('Amoxicillin 500mg 1 cap q8h at 08:00 14:00 20:00 x 7 days').single;
+    final medicine = FallbackParser.parse(
+            'Amoxicillin 500mg 1 cap q8h at 08:00 14:00 20:00 x 7 days')
+        .single;
     expect(medicine.scheduleKind, ScheduleKind.unknown);
-    expect(medicine.reviewNotes.join(' '), contains('Hindi tugma'));
+    expect(medicine.reviewNotes.join(' '), contains('Mismatch:'));
   });
 
   test('one explicit interval anchor is preserved for review', () {
-    final medicine = FallbackParser.parse('Amoxicillin 500mg 1 cap q8h starting 07:30 x 7 days').single;
+    final medicine = FallbackParser.parse(
+            'Amoxicillin 500mg 1 cap q8h starting 07:30 x 7 days')
+        .single;
     expect(medicine.scheduleKind, ScheduleKind.interval);
     expect(medicine.times, ['07:30']);
   });
 
   test('contradictory meal directions do not silently choose one', () {
-    final medicine = FallbackParser.parse('Metformin 500mg 1 tab BID before meals after meals maintenance').single;
+    final medicine = FallbackParser.parse(
+            'Metformin 500mg 1 tab BID before meals after meals maintenance')
+        .single;
     expect(medicine.scheduleKind, ScheduleKind.unknown);
   });
 
-  test('negative strength and quantity are not converted to positive values', () {
-    final medicine = FallbackParser.parse('Amoxicillin -500mg\n-1 cap TID x 7 days').single;
+  test('negative strength and quantity are not converted to positive values',
+      () {
+    final medicine =
+        FallbackParser.parse('Amoxicillin -500mg\n-1 cap TID x 7 days').single;
     expect(medicine.dose, '-500mg');
     expect(medicine.qtyPerIntake, 0);
     expect(medicine.validationErrors(), isNotEmpty);
+  });
+
+  // Phase 5A: exact OCR lines observed from real ML Kit on the Poco X7 Pro
+  // (synthetic handwriting-style images).
+  test('an unreadable strength keeps the medicine and blocks its own lines',
+      () {
+    for (final garbled in ['D.5 mg', 'O.5 mg', 'D.5 ma']) {
+      final meds = FallbackParser.parse('Amoxicillin 500 mg\n'
+          '1 cap every 8 hours x 7 days #21\n'
+          'Colchicine $garbled\n1 tab once daily #30');
+      expect(meds.map((m) => m.name), ['Amoxicillin', 'Colchicine'],
+          reason: garbled);
+      final amox = meds.first;
+      expect(amox.scheduleKind, ScheduleKind.interval);
+      expect(amox.intervalHours, 8);
+      expect(amox.stock, 21);
+      expect(amox.instructions, isNot(contains('once daily')));
+      final colch = meds.last;
+      expect(colch.dose, isEmpty, reason: 'decimal must never be guessed');
+      expect(colch.reviewNotes.join(), contains(garbled));
+      expect(colch.validationErrors(), isNotEmpty);
+      expect(colch.stock, 30);
+    }
+  });
+
+  test('an unreadable "every ? hours" interval is unresolved, not ignored', () {
+    for (final line in [
+      '1 cap every B hours x 7 days #21',
+      '1 cap every & hours x 7 days #21',
+      '1 cap every B hors x 7 days #21',
+      '1 cap every 3 hoursx 7 days #21',
+    ]) {
+      final m = FallbackParser.parse('Amoxicillin 500 mg\n$line').single;
+      expect(m.scheduleKind, ScheduleKind.unknown, reason: line);
+      expect(m.validationErrors(), isNotEmpty, reason: line);
+    }
+    final ok =
+        FallbackParser.parse('Amoxicillin 500 mg\n1 cap every 8 hours x 7 days')
+            .single;
+    expect(ok.scheduleKind, ScheduleKind.interval);
+    expect(ok.intervalHours, 8);
   });
 }

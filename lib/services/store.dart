@@ -4,6 +4,12 @@ import 'dart:io';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/medicine.dart';
+import '../models/routine.dart';
+
+/// How prescriptions are interpreted. Phone Only needs no laptop, network or
+/// AI model: on-device OCR + the rule-based reader. Enhanced adds the laptop
+/// Ollama AI when it is reachable, with a disclosed phone-only fallback.
+enum ProcessingMode { phoneOnly, enhanced }
 
 /// Medicine records are stored on the phone; extraction may use the LAN laptop.
 class Store {
@@ -32,8 +38,9 @@ class Store {
       loadError = null;
       return medicines;
     } catch (_) {
-      loadError = 'Hindi mabasa ang naka-save na gamot. Napanatili ang orihinal na data; '
-          'hindi muna ito papalitan.';
+      loadError =
+          'Your saved medications could not be read. The original data has been '
+          'kept and will not be replaced.';
       return [];
     }
   }
@@ -44,33 +51,110 @@ class Store {
     final duplicateIds = meds.map((m) => m.id).toSet().length != meds.length;
     final operation = _writes.then((_) async {
       if (loadError != null || duplicateIds) {
-        throw StateError('Hindi ligtas palitan ang naka-save na gamot.');
+        throw StateError('Saved medications cannot be replaced safely.');
       }
       final previous = _p.getString('meds');
       // Also protect callers that did not load records before their first write.
       if (previous != null) {
-        meds();
+        Store.meds();
         if (loadError != null) {
-          throw StateError('Hindi ligtas palitan ang naka-save na gamot.');
+          throw StateError('Saved medications cannot be replaced safely.');
         }
       }
       if (previous != null && !_p.containsKey('meds_phase1_backup')) {
         if (!await _p.setString('meds_phase1_backup', previous)) {
-          throw StateError('Hindi nagawa ang backup ng mga gamot.');
+          throw StateError('Medication backup could not be created.');
         }
       }
       if (!await _p.setString('meds', encoded)) {
-        throw StateError('Hindi na-save ang mga gamot.');
+        throw StateError('Medications could not be saved.');
       }
     });
-    _writes = operation.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    _writes =
+        operation.then<void>((_) {}, onError: (Object _, StackTrace __) {});
     return operation;
   }
 
-  // Ollama sa laptop (pareho dapat ang WiFi/hotspot ng phone at laptop)
-  static String get ollamaUrl => _p.getString('ollamaUrl') ?? 'http://192.168.1.81:11434';
+  static ProcessingMode get processingMode {
+    try {
+      return _p.getString('processing_mode') == 'enhanced'
+          ? ProcessingMode.enhanced
+          : ProcessingMode.phoneOnly;
+    } catch (_) {
+      return ProcessingMode.phoneOnly;
+    }
+  }
+
+  static Future<void> setProcessingMode(ProcessingMode mode) async {
+    if (!await _p.setString('processing_mode',
+        mode == ProcessingMode.enhanced ? 'enhanced' : 'phone')) {
+      throw StateError('The processing mode could not be saved.');
+    }
+  }
+
+  // Follow-up reminders: on by default, 30 minutes (disclosed in Settings).
+  static const followUpChoices = [10, 30, 60];
+  static bool get followUpEnabled {
+    try {
+      return _p.getBool('followup_enabled') ?? true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static int get followUpMinutes {
+    try {
+      final value = _p.getInt('followup_minutes');
+      return followUpChoices.contains(value) ? value! : 30;
+    } catch (_) {
+      return 30;
+    }
+  }
+
+  /// Minutes until a follow-up, or null when follow-ups are turned off.
+  static int? get followUpDelay => followUpEnabled ? followUpMinutes : null;
+
+  static Future<void> setFollowUp(
+      {required bool enabled, required int minutes}) async {
+    if (!followUpChoices.contains(minutes)) {
+      throw const FormatException('Choose 10, 30 or 60 minutes.');
+    }
+    if (!await _p.setBool('followup_enabled', enabled) ||
+        !await _p.setInt('followup_minutes', minutes)) {
+      throw StateError('Follow-up settings could not be saved.');
+    }
+  }
+
+  static const _routineKey = 'daily_routine_v1';
+
+  /// The saved daily routine, or null if the user has not saved one (or the
+  /// stored value is unreadable). Picker defaults are never returned here.
+  static DailyRoutine? get routine {
+    try {
+      final raw = _p.getString(_routineKey);
+      if (raw == null) return null;
+      final routine = DailyRoutine.fromJson(
+          Map<String, dynamic>.from(jsonDecode(raw) as Map));
+      return routine.validationErrors().isEmpty ? routine : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> saveRoutine(DailyRoutine routine) async {
+    final errors = routine.validationErrors();
+    if (errors.isNotEmpty) throw FormatException(errors.first);
+    if (!await _p.setString(_routineKey, jsonEncode(routine.toJson()))) {
+      throw StateError('Your daily routine could not be saved.');
+    }
+  }
+
+  // Ollama on the laptop (phone and laptop must share the same Wi-Fi/hotspot)
+  static String get ollamaUrl =>
+      _p.getString('ollamaUrl') ?? 'http://192.168.1.81:11434';
   static String get ollamaModel => _p.getString('ollamaModel') ?? 'qwen2.5:3b';
-  static String get visionModel => _p.getString('visionModel') ?? 'qwen2.5vl:3b';
+  static String get visionModel =>
+      _p.getString('visionModel') ?? 'qwen2.5vl:3b';
 
   /// Accept only local IP endpoints. Public hosts, credentials, and URL queries
   /// are rejected before any prescription is transmitted.
@@ -83,13 +167,15 @@ class Store {
         uri.hasFragment ||
         (uri.path.isNotEmpty && uri.path != '/') ||
         !isLocalHost(uri.host)) {
-      throw const FormatException('Gumamit ng lokal na IP ng laptop at port ng Ollama.');
+      throw const FormatException(
+          'Use the laptop\'s local IP address and Ollama port, for example http://192.168.1.10:11434.');
     }
     return uri.replace(path: '');
   }
 
   static bool isLocalHost(String host) {
-    final normalized = host.toLowerCase().replaceAll('[', '').replaceAll(']', '');
+    final normalized =
+        host.toLowerCase().replaceAll('[', '').replaceAll(']', '');
     if (normalized == 'localhost' || normalized == '::1') return true;
     final address = InternetAddress.tryParse(normalized);
     if (address == null) return false;
@@ -108,14 +194,16 @@ class Store {
   static Future<void> setOllama(String url, String model, String vision) async {
     final endpoint = localOllamaUri(url);
     if (model.trim().isEmpty ||
-        [model, vision].any((m) => RegExp(r'(^|[:/\-])cloud($|[:/\-])',
-            caseSensitive: false).hasMatch(m.trim()))) {
-      throw const FormatException('Pumili ng lokal na text/vision model.');
+        [model, vision].any((m) =>
+            RegExp(r'(^|[:/\-])cloud($|[:/\-])', caseSensitive: false)
+                .hasMatch(m.trim()))) {
+      throw const FormatException(
+          'Enter a local text model. Cloud models are not allowed.');
     }
     if (!await _p.setString('ollamaUrl', endpoint.toString()) ||
         !await _p.setString('ollamaModel', model.trim()) ||
         !await _p.setString('visionModel', vision.trim())) {
-      throw StateError('Hindi na-save ang Local AI settings.');
+      throw StateError('AI connection settings could not be saved.');
     }
   }
 }

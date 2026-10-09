@@ -12,6 +12,7 @@ import 'package:timezone/timezone.dart' as tz;
 
 import '../models/medicine.dart';
 import 'reminder_plan.dart';
+import 'store.dart';
 
 class SchedulerResult {
   const SchedulerResult({required this.success, this.message, this.exact});
@@ -53,18 +54,25 @@ abstract class ReminderStateStore {
 class _PreferencesReminderState implements ReminderStateStore {
   static const key = 'inom_na_reminders_v1';
   @override
-  Future<String?> read() async => (await SharedPreferences.getInstance()).getString(key);
+  Future<String?> read() async =>
+      (await SharedPreferences.getInstance()).getString(key);
   @override
   Future<void> write(String value) async {
-    final saved = await (await SharedPreferences.getInstance()).setString(key, value);
+    final saved =
+        await (await SharedPreferences.getInstance()).setString(key, value);
     if (!saved) throw StateError('Reminder state not persisted');
   }
 }
 
 class _ReminderState {
-  _ReminderState({Map<String, int>? ids, Map<int, PlannedReminder>? registered, Set<int>? retiring,
+  _ReminderState(
+      {Map<String, int>? ids,
+      Map<int, PlannedReminder>? registered,
+      Set<int>? retiring,
       this.legacyMigrated = false})
-      : ids = ids ?? {}, registered = registered ?? {}, retiring = retiring ?? {};
+      : ids = ids ?? {},
+        registered = registered ?? {},
+        retiring = retiring ?? {};
   final Map<String, int> ids;
   final Map<int, PlannedReminder> registered;
   final Set<int> retiring;
@@ -74,16 +82,19 @@ class _ReminderState {
     if (raw == null) return _ReminderState();
     final json = jsonDecode(raw) as Map<String, dynamic>;
     return _ReminderState(
-      ids: (json['ids'] as Map<String, dynamic>).map((key, value) => MapEntry(key, value as int)),
-      registered: (json['registered'] as Map<String, dynamic>).map((key, value) =>
-          MapEntry(int.parse(key), PlannedReminder.fromJson(value as Map<String, dynamic>))),
+      ids: (json['ids'] as Map<String, dynamic>)
+          .map((key, value) => MapEntry(key, value as int)),
+      registered: (json['registered'] as Map<String, dynamic>).map(
+          (key, value) => MapEntry(int.parse(key),
+              PlannedReminder.fromJson(value as Map<String, dynamic>))),
       legacyMigrated: json['legacyMigrated'] as bool? ?? false,
       retiring: (json['retiring'] as List?)?.cast<int>().toSet(),
     );
   }
   String encode() => jsonEncode({
         'ids': ids,
-        'registered': registered.map((key, value) => MapEntry('$key', value.toJson())),
+        'registered':
+            registered.map((key, value) => MapEntry('$key', value.toJson())),
         'legacyMigrated': legacyMigrated,
         'retiring': retiring.toList(),
       });
@@ -107,7 +118,8 @@ class _ReminderState {
 }
 
 class ReminderCoordinator {
-  ReminderCoordinator(this.backend, this.stateStore, {DateTime Function()? clock})
+  ReminderCoordinator(this.backend, this.stateStore,
+      {DateTime Function()? clock})
       : clock = clock ?? DateTime.now;
   final ReminderBackend backend;
   final ReminderStateStore stateStore;
@@ -120,76 +132,128 @@ class ReminderCoordinator {
         return await action();
       } catch (_) {
         // Never include exceptions, medicine names or prescription content.
-        return const SchedulerResult(success: false,
-            message: 'Hindi naayos ang mga paalala. Napanatili ang gamot; subukan muli at suriin ang notification settings.');
+        return const SchedulerResult(
+            success: false,
+            message:
+                'Reminders could not be updated. Your medications are saved. Try again and check notification settings.');
       }
     });
     _tail = next.then<void>((_) {});
     return next;
   }
 
-  Future<SchedulerResult> rescheduleAll(List<Medicine> medicines) {
+  Future<SchedulerResult> rescheduleAll(List<Medicine> medicines,
+      {int? followUpMinutes}) {
     // Snapshot before entering the queue; callers may edit mutable medicines.
-    final snapshot = medicines.map((medicine) => Medicine.fromJson(medicine.toJson())).toList();
+    final snapshot = medicines
+        .map((medicine) => Medicine.fromJson(medicine.toJson()))
+        .toList();
     return _serial(() async {
-      final plan = ReminderPlan.build(snapshot, clock());
-      if (plan.error != null) return SchedulerResult(success: false, message: plan.error);
-      return _apply(plan.reminders, replaceAll: true);
+      final plan = ReminderPlan.build(snapshot, clock(),
+          followUpMinutes: followUpMinutes);
+      if (plan.error != null)
+        return SchedulerResult(success: false, message: plan.error);
+      final result = await _apply(plan.reminders,
+          replaceAll: true,
+          keepMedicineIds: {for (final m in plan.skipped) m.id});
+      if (result.success && result.message == null && plan.notice != null) {
+        return SchedulerResult(
+            success: true, message: plan.notice, exact: result.exact);
+      }
+      return result;
     });
   }
 
-  Future<SchedulerResult> cancelDose(Medicine medicine, DateTime dose) {
+  Future<SchedulerResult> cancelDose(Medicine medicine, DateTime dose,
+      {int? followUpMinutes}) {
     final snapshot = Medicine.fromJson(medicine.toJson());
     return _serial(() async {
-      if (snapshot.scheduleEnd == null && !snapshot.isPrn) {
-        final plan = ReminderPlan.build([snapshot], clock());
-        if (plan.error != null) return SchedulerResult(success: false, message: plan.error);
-        final key = ReminderPlan.seriesKey(snapshot.id, ReminderPlan.timeOf(dose));
-        final replacements = plan.reminders.where((reminder) => reminder.key == key).toList();
-        return _apply(replacements, replaceAll: false, removeKeys: {key});
+      // A dose of an earlier rule (before a schedule edit took effect) has a
+      // one-off reminder, not a repeating series.
+      final earlierRule =
+          snapshot.revisions.isNotEmpty && dose.isBefore(snapshot.start);
+      if (snapshot.scheduleEnd == null && !snapshot.isPrn && !earlierRule) {
+        final plan = ReminderPlan.build([snapshot], clock(),
+            followUpMinutes: followUpMinutes);
+        if (plan.error != null)
+          return SchedulerResult(success: false, message: plan.error);
+        // Move this time's series (and its follow-up series) to the next
+        // dose that is not taken.
+        final time = ReminderPlan.timeOf(dose);
+        final keys = {
+          ReminderPlan.seriesKey(snapshot.id, time),
+          ReminderPlan.followUpSeriesKey(snapshot.id, time),
+        };
+        final replacements = plan.reminders
+            .where((reminder) => keys.contains(reminder.key))
+            .toList();
+        return _apply(replacements, replaceAll: false, removeKeys: keys);
       }
-      return _apply([], replaceAll: false, removeKeys: {'dose:${snapshot.doseId(dose)}'});
+      final doseId = snapshot.doseId(dose);
+      return _apply([],
+          replaceAll: false,
+          removeKeys: {'dose:$doseId', ReminderPlan.followUpKey(doseId)});
     });
   }
 
-  Future<SchedulerResult> testInOneMinute(Medicine? medicine) => _serial(() async {
+  Future<SchedulerResult> testInOneMinute(Medicine? medicine) =>
+      _serial(() async {
         final now = clock();
         final reminder = PlannedReminder(
-          key: 'demo:test', doseId: '', medicineId: '',
-          when: now.add(const Duration(minutes: 1)), title: 'Subok na paalala',
-          body: medicine == null ? 'Ito ang itsura ng paalala.'
-              : 'Inumin: ${medicine.qtyLabel} ${medicine.name} ${medicine.dose}'.trim(),
+          key: 'demo:test',
+          doseId: '',
+          medicineId: '',
+          when: now.add(const Duration(minutes: 1)),
+          title: 'Test reminder',
+          body: medicine == null
+              ? 'This is how your medication reminders will look.'
+              : 'Take ${medicine.qtyLabel} × ${medicine.name} ${medicine.dose}'
+                  .trim(),
         );
         return _apply([reminder], replaceAll: false);
       });
 
-  static String _payload(PlannedReminder reminder, {required bool exact}) => jsonEncode({
-        'version': 1, 'key': reminder.key, 'doseId': reminder.doseId,
-        'when': reminder.when.toIso8601String(), 'daily': reminder.repeatDaily,
+  static String _payload(PlannedReminder reminder, {required bool exact}) =>
+      jsonEncode({
+        'version': 1,
+        'key': reminder.key,
+        'doseId': reminder.doseId,
+        'when': reminder.when.toIso8601String(),
+        'daily': reminder.repeatDaily,
         'content': _contentHash('${reminder.title}\n${reminder.body}'),
         'exact': exact,
       });
   static int _contentHash(String text) {
     var hash = 0;
-    for (final unit in text.codeUnits) { hash = ((hash * 31) + unit) & 0x7fffffff; }
+    for (final unit in text.codeUnits) {
+      hash = ((hash * 31) + unit) & 0x7fffffff;
+    }
     return hash;
   }
 
-  Future<SchedulerResult> _apply(List<PlannedReminder> desired, {
-    required bool replaceAll, Set<String> removeKeys = const {},
+  Future<SchedulerResult> _apply(
+    List<PlannedReminder> desired, {
+    required bool replaceAll,
+    Set<String> removeKeys = const {},
+    Set<String> keepMedicineIds = const {},
   }) async {
+    // Reminders of medicines that could not be planned are left untouched.
+    bool kept(PlannedReminder r) => keepMedicineIds.contains(r.medicineId);
     final permission = await backend.permissions();
     // Deletion/cancellation must still work when permission was revoked.
     if (desired.isNotEmpty && !permission.notificationsGranted) {
-      return const SchedulerResult(success: false,
-          message: 'Hindi pinapayagan ang notifications. Naka-save ang gamot pero hindi nairehistro ang bagong paalala. Payagan ito sa Android settings.');
+      return const SchedulerResult(
+          success: false,
+          message:
+              'Notifications are turned off for IMedsU. Your medication is saved, but the new reminder was not set. Allow notifications in Android settings.');
     }
     final state = _ReminderState.decode(await stateStore.read());
     final pending = await backend.pending();
     final existing = {for (final reminder in pending) reminder.id: reminder};
     final desiredById = <int, PlannedReminder>{};
     for (final reminder in desired) {
-      desiredById[state.reserve(reminder.key, existing.keys.toSet())] = reminder;
+      desiredById[state.reserve(reminder.key, existing.keys.toSet())] =
+          reminder;
     }
     // Persist reservations before touching native schedules; retries use same IDs.
     await stateStore.write(state.encode());
@@ -197,7 +261,7 @@ class ReminderCoordinator {
     final previousRetiring = Set<int>.from(state.retiring);
     final obsolete = <int>{...state.retiring};
     for (final entry in previous.entries) {
-      if (entry.value.key == 'demo:test') continue;
+      if (entry.value.key == 'demo:test' || kept(entry.value)) continue;
       if ((replaceAll || removeKeys.contains(entry.value.key)) &&
           !desiredById.containsKey(entry.key)) {
         obsolete.add(entry.key);
@@ -215,12 +279,18 @@ class ReminderCoordinator {
         var managed = false;
         var demo = false;
         try {
-          final payload = jsonDecode(item.payload ?? '') as Map<String, dynamic>;
+          final payload =
+              jsonDecode(item.payload ?? '') as Map<String, dynamic>;
           managed = payload['version'] == 1;
-          demo = payload['key'] == 'demo:test';
-        } catch (_) { /* Legacy notifications have no payload. */ }
+          demo = payload['key'] == 'demo:test' ||
+              keepMedicineIds
+                  .contains(ReminderPlan.medicineIdOfKey('${payload['key']}'));
+        } catch (_) {/* Legacy notifications have no payload. */}
         if (managed && !demo) obsolete.add(item.id);
-        if (!state.legacyMigrated && (item.payload == null || item.payload!.isEmpty) && item.id > 0 && item.id < 9999) {
+        if (!state.legacyMigrated &&
+            (item.payload == null || item.payload!.isEmpty) &&
+            item.id > 0 &&
+            item.id < 9999) {
           obsolete.add(item.id);
         }
       }
@@ -231,8 +301,10 @@ class ReminderCoordinator {
     var exact = permission.exactAlarmsGranted;
     try {
       for (final entry in desiredById.entries) {
-        final payload = _payload(entry.value, exact: permission.exactAlarmsGranted);
-        if (existing[entry.key]?.payload == payload && !removeKeys.contains(entry.value.key)) continue;
+        final payload =
+            _payload(entry.value, exact: permission.exactAlarmsGranted);
+        if (existing[entry.key]?.payload == payload &&
+            !removeKeys.contains(entry.value.key)) continue;
         // Record first: a backend may register then throw.
         touched.add(entry.key);
         if (removeKeys.contains(entry.value.key)) {
@@ -245,9 +317,11 @@ class ReminderCoordinator {
         exact = exact && wasExact;
       }
       if (replaceAll) {
-        state.registered.removeWhere((id, reminder) => reminder.key != 'demo:test');
+        state.registered.removeWhere(
+            (id, reminder) => reminder.key != 'demo:test' && !kept(reminder));
       } else {
-        state.registered.removeWhere((id, reminder) => removeKeys.contains(reminder.key));
+        state.registered
+            .removeWhere((id, reminder) => removeKeys.contains(reminder.key));
       }
       state.registered.addAll(desiredById);
       state.retiring.clear();
@@ -262,20 +336,30 @@ class ReminderCoordinator {
           final old = previous[id];
           if (old != null && existing.containsKey(id)) {
             final restore = old.nextDailyOccurrence(clock());
-            await backend.schedule(id, restore, _payload(restore, exact: permission.exactAlarmsGranted), exact: permission.exactAlarmsGranted);
+            await backend.schedule(id, restore,
+                _payload(restore, exact: permission.exactAlarmsGranted),
+                exact: permission.exactAlarmsGranted);
           } else {
             await backend.cancel(id);
           }
-        } catch (_) { restored = false; }
+        } catch (_) {
+          restored = false;
+        }
       }
       state.registered.clear();
       state.registered.addAll(previous);
       state.retiring.clear();
       state.retiring.addAll(previousRetiring);
-      try { await stateStore.write(state.encode()); } catch (_) { restored = false; }
-      return SchedulerResult(success: false, message: restored
-          ? 'Hindi nairehistro ang bagong paalala. Napanatili ang dating mga paalala; subukan muli.'
-          : 'Hindi kumpleto ang pag-ayos ng mga paalala. Suriin at subukan muli bago umasa sa reminders.');
+      try {
+        await stateStore.write(state.encode());
+      } catch (_) {
+        restored = false;
+      }
+      return SchedulerResult(
+          success: false,
+          message: restored
+              ? 'The new reminder could not be set. Your previous reminders were kept. Please try again.'
+              : 'Reminders were only partly updated. Check and try again before relying on reminders.');
     }
 
     // Only retire old notifications after successful registration AND storage.
@@ -289,12 +373,17 @@ class ReminderCoordinator {
       if (replaceAll) state.legacyMigrated = true;
       await stateStore.write(state.encode());
     } catch (_) {
-      return const SchedulerResult(success: false,
-          message: 'May lumang paalala na hindi nakansela. Subukan muli bago umasa sa iskedyul.');
+      return const SchedulerResult(
+          success: false,
+          message:
+              'An old reminder could not be cancelled. Try again before relying on the schedule.');
     }
-    return SchedulerResult(success: true, exact: desired.isEmpty ? null : exact,
+    return SchedulerResult(
+        success: true,
+        exact: desired.isEmpty ? null : exact,
         message: desired.isNotEmpty && !exact
-            ? 'Naka-set ang paalala, pero maaaring mahuli dahil hindi pinayagan ang exact alarms.' : null);
+            ? 'Reminders are set, but they may arrive late because "Alarms & reminders" permission is off.'
+            : null);
   }
 }
 
@@ -303,23 +392,30 @@ class NativeReminderBackend implements ReminderBackend {
   final FlutterLocalNotificationsPlugin notifications;
   static const _dailyChannel = MethodChannel('com.inomna/reminders');
   static const details = NotificationDetails(
-    android: AndroidNotificationDetails('inom_na_doses', 'Paalala sa gamot',
-      channelDescription: 'Paalala kapag oras na ng gamot',
-      importance: Importance.max, priority: Priority.high),
+    android: AndroidNotificationDetails('inom_na_doses', 'Medication reminders',
+        channelDescription: 'Reminders when it is time to take a medication',
+        importance: Importance.max,
+        priority: Priority.high),
     iOS: DarwinNotificationDetails(),
   );
 
   @override
   Future<SchedulerPermissionStatus> permissions({bool request = false}) async {
-    final android = notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    final android = notifications.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
     if (android == null) {
-      final ios = notifications.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
+      final ios = notifications.resolvePlatformSpecificImplementation<
+          IOSFlutterLocalNotificationsPlugin>();
       if (ios != null) {
-        if (request) await ios.requestPermissions(alert: true, badge: true, sound: true);
+        if (request)
+          await ios.requestPermissions(alert: true, badge: true, sound: true);
         final status = await ios.checkPermissions();
-        return SchedulerPermissionStatus(notificationsGranted: status?.isEnabled ?? false, exactAlarmsGranted: true);
+        return SchedulerPermissionStatus(
+            notificationsGranted: status?.isEnabled ?? false,
+            exactAlarmsGranted: true);
       }
-      return const SchedulerPermissionStatus(notificationsGranted: false, exactAlarmsGranted: false);
+      return const SchedulerPermissionStatus(
+          notificationsGranted: false, exactAlarmsGranted: false);
     }
     if (request) {
       await android.requestNotificationsPermission();
@@ -327,44 +423,67 @@ class NativeReminderBackend implements ReminderBackend {
     }
     return SchedulerPermissionStatus(
       notificationsGranted: await android.areNotificationsEnabled() ?? false,
-      exactAlarmsGranted: await android.canScheduleExactNotifications() ?? false,
+      exactAlarmsGranted:
+          await android.canScheduleExactNotifications() ?? false,
     );
   }
 
   @override
-  Future<List<PendingReminder>> pending() async => (await notifications.pendingNotificationRequests())
-      .map((notification) => PendingReminder(notification.id, notification.payload)).toList();
+  Future<List<PendingReminder>> pending() async =>
+      (await notifications.pendingNotificationRequests())
+          .map((notification) =>
+              PendingReminder(notification.id, notification.payload))
+          .toList();
 
   @override
-  Future<bool> schedule(int id, PlannedReminder reminder, String payload, {required bool exact}) async {
+  Future<bool> schedule(int id, PlannedReminder reminder, String payload,
+      {required bool exact}) async {
     Future<void> register(bool useExact) async {
-      final modePayload = jsonEncode((jsonDecode(payload) as Map<String, dynamic>)
-        ..['exact'] = useExact);
-      if (reminder.repeatDaily && notifications.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>() != null) {
+      final modePayload = jsonEncode(
+          (jsonDecode(payload) as Map<String, dynamic>)..['exact'] = useExact);
+      if (reminder.repeatDaily &&
+          notifications.resolvePlatformSpecificImplementation<
+                  AndroidFlutterLocalNotificationsPlugin>() !=
+              null) {
         final date = tz.TZDateTime.from(reminder.when, tz.local);
         String two(int value) => value.toString().padLeft(2, '0');
         // Existing plugin native support is exposed through a tiny bridge to
         // honor tomorrow/future starts after an early taken-dose cancellation.
         await _dailyChannel.invokeMethod<void>('scheduleDaily', {
-          'id': id, 'title': reminder.title, 'body': reminder.body,
+          'id': id,
+          'title': reminder.title,
+          'body': reminder.body,
           'payload': modePayload,
           'timeZoneName': date.location.name,
-          'scheduledDateTime': '${date.year.toString().padLeft(4, '0')}-${two(date.month)}-${two(date.day)}T${two(date.hour)}:${two(date.minute)}:${two(date.second)}',
+          'scheduledDateTime':
+              '${date.year.toString().padLeft(4, '0')}-${two(date.month)}-${two(date.day)}T${two(date.hour)}:${two(date.minute)}:${two(date.second)}',
           'platformSpecifics': {
             ...details.android!.toMap(),
-            'scheduleMode': (useExact ? AndroidScheduleMode.exactAllowWhileIdle : AndroidScheduleMode.inexactAllowWhileIdle).name,
+            'scheduleMode': (useExact
+                    ? AndroidScheduleMode.exactAllowWhileIdle
+                    : AndroidScheduleMode.inexactAllowWhileIdle)
+                .name,
           },
         });
         return;
       }
       await notifications.zonedSchedule(
-      id, reminder.title, reminder.body, tz.TZDateTime.from(reminder.when, tz.local), details,
-      androidScheduleMode: useExact ? AndroidScheduleMode.exactAllowWhileIdle : AndroidScheduleMode.inexactAllowWhileIdle,
-      uiLocalNotificationDateInterpretation: UILocalNotificationDateInterpretation.absoluteTime,
-      matchDateTimeComponents: reminder.repeatDaily ? DateTimeComponents.time : null,
-      payload: modePayload,
+        id,
+        reminder.title,
+        reminder.body,
+        tz.TZDateTime.from(reminder.when, tz.local),
+        details,
+        androidScheduleMode: useExact
+            ? AndroidScheduleMode.exactAllowWhileIdle
+            : AndroidScheduleMode.inexactAllowWhileIdle,
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        matchDateTimeComponents:
+            reminder.repeatDaily ? DateTimeComponents.time : null,
+        payload: modePayload,
       );
     }
+
     try {
       await register(exact);
       return exact;
@@ -383,40 +502,59 @@ class NativeReminderBackend implements ReminderBackend {
 class Scheduler {
   static final _notifications = FlutterLocalNotificationsPlugin();
   static final _backend = NativeReminderBackend(_notifications);
-  static final _coordinator = ReminderCoordinator(_backend, _PreferencesReminderState());
+  static final _coordinator =
+      ReminderCoordinator(_backend, _PreferencesReminderState());
   static bool _initialized = false;
 
   static Future<void> init() async {
     tzdata.initializeTimeZones();
     tz.setLocalLocation(tz.getLocation('Asia/Manila'));
     try {
-      _initialized = await _notifications.initialize(const InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
-        iOS: DarwinInitializationSettings(),
-      )) ?? false;
-    } catch (_) { _initialized = false; }
+      _initialized =
+          await _notifications.initialize(const InitializationSettings(
+                android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+                iOS: DarwinInitializationSettings(),
+              )) ??
+              false;
+    } catch (_) {
+      _initialized = false;
+    }
   }
 
   static Future<SchedulerPermissionStatus> permissionStatus() async {
-    try { return await _backend.permissions(); } catch (_) {
-      return const SchedulerPermissionStatus(notificationsGranted: false, exactAlarmsGranted: false);
+    try {
+      return await _backend.permissions();
+    } catch (_) {
+      return const SchedulerPermissionStatus(
+          notificationsGranted: false, exactAlarmsGranted: false);
     }
   }
+
   static Future<SchedulerPermissionStatus> requestPermissions() async {
-    try { return await _backend.permissions(request: true); } catch (_) {
+    try {
+      return await _backend.permissions(request: true);
+    } catch (_) {
       return permissionStatus();
     }
   }
-  static const _unavailable = SchedulerResult(success: false,
-      message: 'Hindi handa ang notifications. I-restart ang app at suriin ang Android settings.');
+
+  static const _unavailable = SchedulerResult(
+      success: false,
+      message:
+          'Notifications are not ready. Restart the app and check Android settings.');
   static Future<SchedulerResult> rescheduleAll(List<Medicine> medicines) async {
     if (!_initialized) return _unavailable;
-    return _coordinator.rescheduleAll(medicines);
+    return _coordinator.rescheduleAll(medicines,
+        followUpMinutes: Store.followUpDelay);
   }
-  static Future<SchedulerResult> cancelDose(Medicine medicine, DateTime dose) async {
+
+  static Future<SchedulerResult> cancelDose(
+      Medicine medicine, DateTime dose) async {
     if (!_initialized) return _unavailable;
-    return _coordinator.cancelDose(medicine, dose);
+    return _coordinator.cancelDose(medicine, dose,
+        followUpMinutes: Store.followUpDelay);
   }
+
   static Future<SchedulerResult> testInOneMinute(Medicine? medicine) async {
     if (!_initialized) return _unavailable;
     return _coordinator.testInOneMinute(medicine);

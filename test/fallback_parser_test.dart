@@ -166,7 +166,7 @@ void main() {
             'Amoxicillin 500mg 1 cap q8h at 08:00 14:00 20:00 x 7 days')
         .single;
     expect(medicine.scheduleKind, ScheduleKind.unknown);
-    expect(medicine.reviewNotes.join(' '), contains('Hindi tugma'));
+    expect(medicine.reviewNotes.join(' '), contains('Mismatch:'));
   });
 
   test('one explicit interval anchor is preserved for review', () {

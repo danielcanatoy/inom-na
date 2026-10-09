@@ -60,7 +60,7 @@ Future<void> tapReview(WidgetTester tester) async {
 }
 
 Future<void> tapSave(WidgetTester tester) async {
-  await tester.tap(find.text('Tama na, i-set ang paalala'));
+  await tester.tap(find.text('Save and Set Reminders'));
   await tester.pumpAndSettle();
 }
 
@@ -103,7 +103,7 @@ void main() {
     expect(tester.widget<CheckboxListTile>(find.byType(CheckboxListTile)).value,
         isTrue);
 
-    final doseField = fieldWithLabel('Dose / strength');
+    final doseField = fieldWithLabel('Strength / dose');
     await tester.ensureVisible(doseField);
     await tester.pump();
     await tester.enterText(doseField, '0mg');
@@ -134,11 +134,11 @@ void main() {
       returned = true;
       returnedValue = value;
     });
-    final nameField = fieldWithLabel('Gamot');
+    final nameField = fieldWithLabel('Medication name');
     await tester.ensureVisible(nameField);
     await tester.pump();
     await tester.enterText(nameField, 'Amoxicillin');
-    final doseField = fieldWithLabel('Dose / strength');
+    final doseField = fieldWithLabel('Strength / dose');
     await tester.ensureVisible(doseField);
     await tester.pump();
     await tester.enterText(doseField, '250mg');
@@ -167,7 +167,7 @@ void main() {
     await tapSave(tester);
     expect(returned, isNull);
 
-    final anchor = find.textContaining('Simula / unang dose:');
+    final anchor = find.textContaining('First dose / start:');
     await tester.ensureVisible(anchor);
     await tester.pump();
     await tester.tap(anchor);
@@ -197,7 +197,7 @@ void main() {
     List<Medicine>? returned;
     await openConfirmation(tester, medicine, (value) => returned = value);
 
-    final anchor = find.textContaining('Simula / unang dose:');
+    final anchor = find.textContaining('First dose / start:');
     await tester.ensureVisible(anchor);
     await tester.pump();
     await tester.tap(anchor);

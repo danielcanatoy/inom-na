@@ -1,6 +1,6 @@
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 
-/// On-device OCR (Google ML Kit). Hindi umaalis sa phone ang larawan.
+/// On-device OCR (Google ML Kit). Text recognition runs on the phone.
 class Ocr {
   static Future<String> read(String imagePath) async {
     final recognizer = TextRecognizer(script: TextRecognitionScript.latin);

@@ -1,4 +1,4 @@
-# CLAUDE.md — Inom Na! (AppBuildersPH Hackathon 2026)
+# CLAUDE.md — IMedsU (AppBuildersPH Hackathon 2026)
 
 > Project instructions for Claude Code. The latest verified code and real-device behavior take precedence over older notes. Work in small, testable increments under the hackathon deadline.
 
@@ -6,7 +6,8 @@
 
 - **Always reply to the developer in English**, even if the developer writes in Filipino or Taglish. Use straightforward explanations suitable for a student developer familiar with React/Node/Flask but newer to Flutter.
 - Write all progress updates, questions, test reports, commit messages, and implementation summaries in English.
-- **All user-facing app UI must be in English:** screen titles, buttons, medication statuses, instructions, error messages, warnings, permissions, settings, and notification text. Keep the product name **Inom Na!** unchanged.
+- **All user-facing app UI must be in English:** screen titles, buttons, medication statuses, instructions, error messages, warnings, permissions, settings, and notification text. The official product name is **IMedsU** (exact spelling/capitalization; formerly "Inom Na!").
+- The rebrand is public-facing only. Do **not** rename the Dart package `inom_na`, Android application ID, Kotlin package, method channel `com.inomna/reminders`, notification channel ID `inom_na_doses`, or SharedPreferences keys — renaming them would break installs and saved data.
 - Keep original prescription contents, medicine names, dose instructions, and user-provided medical text intact. Do not automatically translate or reinterpret source directions in a way that changes their medical meaning.
 - Centralize UI strings where practical and use consistent, plain-English terms: **Mark as Taken**, **Upcoming**, **Not Taken**, **Missed**, **I've Verified This**, **Handwritten**, **My Daily Routine**, **Medication**, **Scheduled Time**, **Remind Me Again**.
 - Do not show a UI status, progress count, or control unless supported by real functionality. In particular, missed-dose status and full-screen alarm mode are not implemented yet.
@@ -21,7 +22,7 @@
 
 ## 3. Product and final scope
 
-**Inom Na!** is an offline-first prescription-reading and medication-reminder app for Filipino patients and caregivers, especially people managing multiple medicines.
+**IMedsU** (formerly Inom Na!) is an offline-first prescription-reading and medication-reminder app for Filipino patients and caregivers, especially people managing multiple medicines.
 
 **Protect this end-to-end workflow:**
 
@@ -38,7 +39,7 @@
 2. **Medication scheduling** — validated prescription semantics, exact intervals/explicit times, then user routine-based suggestions when implemented.
 3. **Offline reminders and adherence** — reliable notifications, durable records, dose logging, then missed-dose follow-ups when implemented.
 
-**OUT OF SCOPE:** Do not implement “Tanong kay Inom Na”, a chat screen, chatbot intents, chat actions, free-form chat, Gemini medication explanations, or any cloud AI feature. **Keep Ollama vision/text inference for prescription extraction.**
+**OUT OF SCOPE:** Do not implement “Tanong kay Inom Na”/any IMedsU assistant, a chat screen, chatbot intents, chat actions, free-form chat, Gemini medication explanations, or any cloud AI feature. **Keep Ollama vision/text inference for prescription extraction.**
 
 **Medical safety:** This app organizes doctor/pharmacist instructions. It does **not** diagnose, prescribe, change doses, resolve ambiguous medication directions autonomously, or give medicine-specific missed-dose advice. Unknown/ambiguous data must remain unresolved until the user reviews it and/or consults a pharmacist. Never turn `q8h` into unrelated morning/lunch/evening times. Explicit prescribed times and intervals take precedence over routine preferences.
 
@@ -77,7 +78,10 @@ Camera / gallery / typed prescription
 - `lib/services/reminder_planner.dart` — reminder planning (if present; inspect actual repository).
 - `lib/screens/home_screen.dart` — today's medication schedule and actions.
 - `lib/screens/confirm_screen.dart` — editable, safety-critical confirmation.
-- `lib/screens/settings_screen.dart` — local AI and existing settings.
+- `lib/screens/settings_screen.dart` — AI connection, notification permissions/test, about.
+- `lib/ui/` — Phase 2 design system: `app_theme.dart` (colors/theme), `app_strings.dart` (shared English terms), `brand.dart` (IMedsU wordmark + capsule mark), `components.dart` (status badge, banners, empty state, section header, processing dialog), `format.dart` (date/time formatting).
+- `lib/services/review_note.dart` — review-note categories (`Conflict:`, `Mismatch:`, `Invalid:`, `Unclear:`). Parsers decide whether a schedule stays unresolved using these prefixes; never match on free-text wording.
+- `tool/generate_launcher_icon.dart` — regenerates the launcher icons (`dart run tool/generate_launcher_icon.dart`).
 - `android/app/src/main/kotlin/.../MainActivity.kt` — Android native reminder bridge.
 - `test/` — parser, validation, scheduler, widget and other tests.
 - `PHASE1_REPORT.md`, `README.md`, `TEST_PLAN.md` — implementation handoff, setup, and accuracy/test plans (where present).
@@ -106,6 +110,11 @@ Camera / gallery / typed prescription
 - A phone screenshot shows Inom Na open on the medication confirmation screen. Therefore the old note that the app could not be installed (`INSTALL_FAILED_USER_RESTRICTED`) is **outdated**; do not treat it as the current blocker. However, scan accuracy, alarm delivery, offline behavior, reboot recovery, and end-to-end native reminder action are **not yet verified** unless new test evidence is supplied.
 - **Confirmed UI issue on the phone:** `RIGHT OVERFLOWED BY 22 PIXELS` and `RIGHT OVERFLOWED BY 38 PIXELS` near scheduling type and medication duration dropdowns in `ConfirmScreen`. Fix responsively and add a layout test; preserve validation and schedule logic.
 
+### Phase 2 — English UI/UX redesign and IMedsU rebrand (October 9, 2026, branch `phase2-imedsu-ui`)
+
+- Implemented and code-verified; awaiting the developer's real-device review and approval. See the Phase 2 report in the session for test/build numbers. Do not start Phase 3 without approval.
+- Confirm-screen dropdown overflow fixed (`isExpanded`, non-dense, wrapping) with layout tests at 320/393 dp and text scale up to 2.0.
+
 ### Remaining Phase 1/device risks
 
 - Real HyperOS reminder delivery while locked/backgrounded, after app termination and after reboot.
@@ -124,10 +133,10 @@ Camera / gallery / typed prescription
 4. On the phone, test typed synthetic prescription -> edit/verify -> save; a near-future real medicine reminder; lock/background behavior; cancellation after marking a dose taken; restart/persistence; and later reboot recovery.
 5. Test scanning and local network Ollama separately, and test phone-only fallback with the laptop disconnected. Record actual results.
 
-### Phase 2: English-only UI/UX redesign (after core verification, with explicit approval)
+### Phase 2: English-only UI/UX redesign and IMedsU rebrand (implemented; pending approval)
 
 - Use Flutter Material 3. Design a clean, professional, accessible healthcare UI with calm teal/blue/neutral tones, high contrast, large controls, and responsive layouts.
-- Redesign **existing** Home, Scan, Confirm, and Settings experiences, not business logic. Keep Inom Na! branding. Support senior users and increased text scaling.
+- Redesign **existing** Home, Scan, Confirm, and Settings experiences, not business logic. Use the IMedsU branding. Support senior users and increased text scaling.
 - Translate all **UI and notification messages** into English; preserve unmodified prescription-source text.
 - Make uncertainty, missing instructions, editable fields, verified state, and save-blocking errors obvious.
 - Show only implemented statuses/counters, backed by actual saved data. Do not fake Missed, Routine, Alarm, refill, or history features.

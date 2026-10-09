@@ -40,6 +40,24 @@ Map<String, Medicine> layoutCases() => {
         start: DateTime(2026, 10, 9, 8),
       ),
       'unresolved draft': Medicine(id: 'draft', name: 'Cetirizine'),
+      'long name and directions': Medicine(
+        id: 'long',
+        name: 'Isosorbide Mononitrate Extended-Release',
+        dose: '30mg',
+        qtyPerIntake: 0.5,
+        scheduleKind: ScheduleKind.explicit,
+        frequencyPerDay: 3,
+        times: ['06:30', '14:30', '22:30'],
+        days: 30,
+        durationConfirmed: true,
+        instructions: 'Take 1/2 tablet with a full glass of water after '
+            'breakfast, after lunch and at bedtime; do not crush or chew',
+        reviewNotes: [
+          'Unclear: some timing directions are unclear or not '
+              'supported. Correct the schedule and check the original directions.'
+        ],
+        start: DateTime(2026, 10, 9, 6),
+      ),
     };
 
 Future<void> pumpConfirm(
@@ -96,17 +114,17 @@ void main() {
     for (var i = 0; i < 2; i++) {
       await tester.ensureVisible(dropdowns.at(i));
       await tester.pump();
-      // 'Hindi pa malinaw' is not selected in either dropdown, so it is only
+      // 'Not clear yet' is not selected in either dropdown, so it is only
       // on screen while a menu is open.
-      expect(find.text('Hindi pa malinaw'), findsNothing);
+      expect(find.text('Not clear yet'), findsNothing);
       await tester.tap(dropdowns.at(i));
       await tester.pumpAndSettle();
-      expect(find.text('Hindi pa malinaw'), findsOneWidget);
+      expect(find.text('Not clear yet'), findsOneWidget);
       expect(tester.takeException(), isNull);
       // Close the menu without changing the reviewed value.
       await tester.tapAt(const Offset(4, 4));
       await tester.pumpAndSettle();
-      expect(find.text('Hindi pa malinaw'), findsNothing);
+      expect(find.text('Not clear yet'), findsNothing);
       expect(tester.takeException(), isNull);
     }
   });
@@ -115,10 +133,21 @@ void main() {
       (tester) async {
     await pumpConfirm(tester, layoutCases()['interval + days']!,
         width: 320, textScale: 2.0);
-    for (final label in ['Eksaktong pagitan (q6h/q8h)', 'Bilang ng araw']) {
+    for (final label in ['Exact interval (q6h/q8h)', 'Number of days']) {
       final text = tester.widget<Text>(find.text(label).first);
       expect(text.overflow, isNot(TextOverflow.ellipsis));
       expect(text.maxLines, isNull);
     }
+  });
+
+  testWidgets('Save stays visible above the keyboard', (tester) async {
+    await pumpConfirm(tester, layoutCases()['interval + days']!,
+        width: 393, textScale: 1.3, height: 800);
+    tester.view.viewInsets = const FakeViewPadding(bottom: 300 * 3);
+    await tester.pumpAndSettle();
+    final save = find.text('Save and Set Reminders');
+    expect(save, findsOneWidget);
+    expect(tester.getRect(save).bottom, lessThanOrEqualTo(800 - 300));
+    expect(tester.takeException(), isNull);
   });
 }

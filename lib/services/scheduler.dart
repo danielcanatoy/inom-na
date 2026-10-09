@@ -134,7 +134,7 @@ class ReminderCoordinator {
         return const SchedulerResult(
             success: false,
             message:
-                'Hindi naayos ang mga paalala. Napanatili ang gamot; subukan muli at suriin ang notification settings.');
+                'Reminders could not be updated. Your medications are saved. Try again and check notification settings.');
       }
     });
     _tail = next.then<void>((_) {});
@@ -180,10 +180,10 @@ class ReminderCoordinator {
           doseId: '',
           medicineId: '',
           when: now.add(const Duration(minutes: 1)),
-          title: 'Subok na paalala',
+          title: 'Test reminder',
           body: medicine == null
-              ? 'Ito ang itsura ng paalala.'
-              : 'Inumin: ${medicine.qtyLabel} ${medicine.name} ${medicine.dose}'
+              ? 'This is how your medication reminders will look.'
+              : 'Take ${medicine.qtyLabel} × ${medicine.name} ${medicine.dose}'
                   .trim(),
         );
         return _apply([reminder], replaceAll: false);
@@ -218,7 +218,7 @@ class ReminderCoordinator {
       return const SchedulerResult(
           success: false,
           message:
-              'Hindi pinapayagan ang notifications. Naka-save ang gamot pero hindi nairehistro ang bagong paalala. Payagan ito sa Android settings.');
+              'Notifications are turned off for IMedsU. Your medication is saved, but the new reminder was not set. Allow notifications in Android settings.');
     }
     final state = _ReminderState.decode(await stateStore.read());
     final pending = await backend.pending();
@@ -329,8 +329,8 @@ class ReminderCoordinator {
       return SchedulerResult(
           success: false,
           message: restored
-              ? 'Hindi nairehistro ang bagong paalala. Napanatili ang dating mga paalala; subukan muli.'
-              : 'Hindi kumpleto ang pag-ayos ng mga paalala. Suriin at subukan muli bago umasa sa reminders.');
+              ? 'The new reminder could not be set. Your previous reminders were kept. Please try again.'
+              : 'Reminders were only partly updated. Check and try again before relying on reminders.');
     }
 
     // Only retire old notifications after successful registration AND storage.
@@ -347,13 +347,13 @@ class ReminderCoordinator {
       return const SchedulerResult(
           success: false,
           message:
-              'May lumang paalala na hindi nakansela. Subukan muli bago umasa sa iskedyul.');
+              'An old reminder could not be cancelled. Try again before relying on the schedule.');
     }
     return SchedulerResult(
         success: true,
         exact: desired.isEmpty ? null : exact,
         message: desired.isNotEmpty && !exact
-            ? 'Naka-set ang paalala, pero maaaring mahuli dahil hindi pinayagan ang exact alarms.'
+            ? 'Reminders are set, but they may arrive late because "Alarms & reminders" permission is off.'
             : null);
   }
 }
@@ -363,8 +363,8 @@ class NativeReminderBackend implements ReminderBackend {
   final FlutterLocalNotificationsPlugin notifications;
   static const _dailyChannel = MethodChannel('com.inomna/reminders');
   static const details = NotificationDetails(
-    android: AndroidNotificationDetails('inom_na_doses', 'Paalala sa gamot',
-        channelDescription: 'Paalala kapag oras na ng gamot',
+    android: AndroidNotificationDetails('inom_na_doses', 'Medication reminders',
+        channelDescription: 'Reminders when it is time to take a medication',
         importance: Importance.max,
         priority: Priority.high),
     iOS: DarwinNotificationDetails(),
@@ -512,7 +512,7 @@ class Scheduler {
   static const _unavailable = SchedulerResult(
       success: false,
       message:
-          'Hindi handa ang notifications. I-restart ang app at suriin ang Android settings.');
+          'Notifications are not ready. Restart the app and check Android settings.');
   static Future<SchedulerResult> rescheduleAll(List<Medicine> medicines) async {
     if (!_initialized) return _unavailable;
     return _coordinator.rescheduleAll(medicines);

@@ -76,18 +76,18 @@ class ReminderPlan {
       if (!medicineIds.add(medicine.id)) {
         return const ReminderPlan([],
             error:
-                'May magkaparehong medicine ID. Hindi binago ang mga paalala.');
+                'Two medications share the same ID. Reminders were not changed.');
       }
       if (medicine.scheduleErrors().isNotEmpty) {
         return const ReminderPlan([],
             error:
-                'May hindi pa wastong iskedyul. Suriin ang oras, frequency at petsa bago magpaalala.');
+                'A medication schedule is not valid yet. Check its times, frequency and dates before reminders can be set.');
       }
       if (medicine.isPrn) continue;
       final extra =
           medicine.instructions.isEmpty ? '' : ' (${medicine.instructions})';
       final body =
-          'Inumin: ${medicine.qtyLabel} ${medicine.name} ${medicine.dose}$extra'
+          'Take ${medicine.qtyLabel} × ${medicine.name} ${medicine.dose}$extra'
               .trim();
       final end = medicine.scheduleEnd;
       if (end != null && !end.isAfter(now)) continue;
@@ -111,7 +111,7 @@ class ReminderPlan {
             (interval == null || 24 % interval != 0)) {
           return const ReminderPlan([],
               error:
-                  'Ang tuloy-tuloy na interval na ito ay hindi pa suportado sa offline reminders. Magtakda ng end date; hindi binago ang mga paalala.');
+                  'Ongoing reminders for this dose interval are not supported yet. Set an end date. Reminders were not changed.');
         }
         // Daily repeating series continue while the app is closed, indefinitely.
         // Start after every already-taken occurrence, including an early marking.
@@ -134,7 +134,7 @@ class ReminderPlan {
             doseId: medicine.doseId(entry.value),
             medicineId: medicine.id,
             when: entry.value,
-            title: 'Oras na ng gamot',
+            title: doseTitle,
             body: body,
             repeatDaily: true,
           ));
@@ -155,8 +155,9 @@ class ReminderPlan {
               doseId: '',
               medicineId: medicine.id,
               when: alert,
-              title: 'Malapit nang maubos',
-              body: '3 araw na lang ang ${medicine.name}. Bumili ka na.',
+              title: 'Medication running low',
+              body:
+                  'About 3 days of ${medicine.name} left. Please arrange a refill.',
             ));
             if (result.length > maxPending) return _capacityFailure();
           }
@@ -166,6 +167,8 @@ class ReminderPlan {
     result.sort((a, b) => a.when.compareTo(b.when));
     return ReminderPlan(result);
   }
+
+  static const doseTitle = 'Time for your medication';
 
   static String seriesKey(String medicineId, String time) =>
       'daily:$medicineId:$time';
@@ -178,10 +181,10 @@ class ReminderPlan {
         doseId: medicine.doseId(dose),
         medicineId: medicine.id,
         when: dose,
-        title: 'Oras na ng gamot',
+        title: doseTitle,
         body: body,
       );
   static ReminderPlan _capacityFailure() => const ReminderPlan([],
       error:
-          'Mahigit 400 paalala ang kailangan. Hindi binago ang mga dating paalala. Hindi suportado ang dami ng paalala sa kasalukuyang app. Huwag baguhin ang reseta para magkasya; gumamit muna ng ibang paraan ng paalala.');
+          'More than 400 reminders would be needed, which this app does not support yet. Your existing reminders were not changed. Do not change the prescription to fit this limit; use another reminder method for now.');
 }

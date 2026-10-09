@@ -1,7 +1,7 @@
 /// Daily frequency and fixed-hour intervals have different prescription meanings.
 enum ScheduleKind { unknown, daily, interval, explicit, prn }
 
-/// Isang gamot sa reseta at ang schedule nito.
+/// One prescribed medication and its schedule.
 class Medicine {
   Medicine({
     required this.id,
@@ -61,15 +61,22 @@ class Medicine {
   }
 
   String get frequencyLabel {
-    if (isPrn) return 'Kapag kailangan (PRN)';
-    if (scheduleKind == ScheduleKind.unknown) return 'Dalas: kailangang suriin';
+    if (isPrn) return 'As needed (PRN)';
+    if (scheduleKind == ScheduleKind.unknown) return 'Frequency: needs review';
+    final count = times.length;
     final frequency = scheduleKind == ScheduleKind.interval
-        ? 'Tuwing ${intervalHours ?? "?"} oras'
-        : '${times.length}x kada araw';
-    if (!durationConfirmed) return '$frequency · tagal: kailangang suriin';
-    if (isMaintenance) return '$frequency · maintenance';
-    if (days != null) return '$frequency · $days araw';
-    return '$frequency · may petsa ng pagtatapos';
+        ? 'Every ${intervalHours ?? "?"} hours'
+        : count == 1
+            ? 'Once a day'
+            : count == 2
+                ? 'Twice a day'
+                : '$count times a day';
+    if (!durationConfirmed) return '$frequency · duration needs review';
+    if (isMaintenance) return '$frequency · ongoing (maintenance)';
+    if (days != null) {
+      return '$frequency · for $days ${days == 1 ? "day" : "days"}';
+    }
+    return '$frequency · until an end date';
   }
 
   static String newId() => DateTime.now().microsecondsSinceEpoch.toString();
@@ -151,33 +158,33 @@ class Medicine {
   List<String> scheduleErrors() {
     final errors = <String>[];
     if (scheduleKind == ScheduleKind.unknown) {
-      errors.add('Linawin ang dalas o oras ng pag-inom.');
+      errors.add('Choose how often or at what times to take this medication.');
     }
     if (!durationConfirmed) {
-      errors.add('Kumpirmahin ang tagal; hindi awtomatikong maintenance.');
+      errors.add(
+          'Confirm how long to take this medication. It is not assumed to be ongoing.');
     }
     if (days != null && (days! <= 0 || days! > 3650)) {
-      errors.add('Ang bilang ng araw ay dapat 1–3650.');
+      errors.add('The number of days must be between 1 and 3650.');
     }
     if (end != null && !end!.isAfter(start)) {
-      errors.add('Dapat mas huli sa simula ang pagtatapos.');
+      errors.add('The end must be later than the start.');
     }
     if (end != null && end!.difference(start) > const Duration(days: 3650)) {
-      errors.add('Hindi maaaring lumampas sa 3650 araw ang pagtatapos.');
+      errors.add('The end cannot be more than 3650 days after the start.');
     }
     if (days != null && end != null) {
-      errors.add(
-          'Gamitin ang bilang ng araw o petsa ng pagtatapos, hindi pareho.');
+      errors.add('Use either a number of days or an end date, not both.');
     }
     if (scheduleKind == ScheduleKind.interval) {
       if (intervalHours == null ||
           intervalHours! <= 0 ||
           intervalHours! > 168) {
-        errors.add('Ang pagitan ng oras ay dapat 1–168 oras.');
+        errors.add('The dose interval must be between 1 and 168 hours.');
       }
       if (times.any((time) => !validTime(time)) ||
           times.toSet().length != times.length) {
-        errors.add('Linawin ang nabasang oras ng unang dose.');
+        errors.add('Check the first-dose time that was read.');
       }
     }
     if (scheduleKind == ScheduleKind.daily ||
@@ -185,30 +192,30 @@ class Medicine {
       if (times.isEmpty ||
           times.length > 24 ||
           times.any((t) => !validTime(t))) {
-        errors.add('Maglagay ng wastong oras sa format na HH:mm.');
+        errors.add('Add at least one valid time (HH:mm).');
       }
       if (times.toSet().length != times.length) {
-        errors.add('Hindi maaaring maulit ang oras ng isang gamot.');
+        errors.add('The same time cannot be added twice.');
       }
       if (scheduleKind == ScheduleKind.daily &&
           (frequencyPerDay == null ||
               frequencyPerDay! <= 0 ||
               frequencyPerDay! > 24 ||
               frequencyPerDay != times.length)) {
-        errors.add('Dapat tumugma ang dalas sa bilang ng napiling oras.');
+        errors.add('The times per day must match the number of times added.');
       }
     }
     return errors;
   }
 
   List<String> validationErrors() => [
-        if (id.trim().isEmpty) 'Walang pagkakakilanlan ang gamot.',
-        if (name.trim().isEmpty) 'Ilagay ang pangalan ng gamot.',
+        if (id.trim().isEmpty) 'This medication has no identifier.',
+        if (name.trim().isEmpty) 'Enter the medication name.',
         if (!validDose(dose))
-          'Ilagay at suriin ang numeric dosage o strength kasama ang unit.',
+          'Enter the strength with a number and unit (for example, 500 mg).',
         if (!qtyPerIntake.isFinite || qtyPerIntake <= 0)
-          'Ilagay ang wastong dami kada pag-inom.',
-        if (stock != null && stock! < 0) 'Hindi maaaring negatibo ang stock.',
+          'Enter a valid amount per dose (for example, 1 or 0.5).',
+        if (stock != null && stock! < 0) 'Stock cannot be negative.',
         ...scheduleErrors(),
       ];
 

@@ -33,8 +33,8 @@ class Store {
       return medicines;
     } catch (_) {
       loadError =
-          'Hindi mabasa ang naka-save na gamot. Napanatili ang orihinal na data; '
-          'hindi muna ito papalitan.';
+          'Your saved medications could not be read. The original data has been '
+          'kept and will not be replaced.';
       return [];
     }
   }
@@ -45,23 +45,23 @@ class Store {
     final duplicateIds = meds.map((m) => m.id).toSet().length != meds.length;
     final operation = _writes.then((_) async {
       if (loadError != null || duplicateIds) {
-        throw StateError('Hindi ligtas palitan ang naka-save na gamot.');
+        throw StateError('Saved medications cannot be replaced safely.');
       }
       final previous = _p.getString('meds');
       // Also protect callers that did not load records before their first write.
       if (previous != null) {
         Store.meds();
         if (loadError != null) {
-          throw StateError('Hindi ligtas palitan ang naka-save na gamot.');
+          throw StateError('Saved medications cannot be replaced safely.');
         }
       }
       if (previous != null && !_p.containsKey('meds_phase1_backup')) {
         if (!await _p.setString('meds_phase1_backup', previous)) {
-          throw StateError('Hindi nagawa ang backup ng mga gamot.');
+          throw StateError('Medication backup could not be created.');
         }
       }
       if (!await _p.setString('meds', encoded)) {
-        throw StateError('Hindi na-save ang mga gamot.');
+        throw StateError('Medications could not be saved.');
       }
     });
     _writes =
@@ -69,7 +69,7 @@ class Store {
     return operation;
   }
 
-  // Ollama sa laptop (pareho dapat ang WiFi/hotspot ng phone at laptop)
+  // Ollama on the laptop (phone and laptop must share the same Wi-Fi/hotspot)
   static String get ollamaUrl =>
       _p.getString('ollamaUrl') ?? 'http://192.168.1.81:11434';
   static String get ollamaModel => _p.getString('ollamaModel') ?? 'qwen2.5:3b';
@@ -88,7 +88,7 @@ class Store {
         (uri.path.isNotEmpty && uri.path != '/') ||
         !isLocalHost(uri.host)) {
       throw const FormatException(
-          'Gumamit ng lokal na IP ng laptop at port ng Ollama.');
+          'Use the laptop\'s local IP address and Ollama port, for example http://192.168.1.10:11434.');
     }
     return uri.replace(path: '');
   }
@@ -117,12 +117,13 @@ class Store {
         [model, vision].any((m) =>
             RegExp(r'(^|[:/\-])cloud($|[:/\-])', caseSensitive: false)
                 .hasMatch(m.trim()))) {
-      throw const FormatException('Pumili ng lokal na text/vision model.');
+      throw const FormatException(
+          'Enter a local text model. Cloud models are not allowed.');
     }
     if (!await _p.setString('ollamaUrl', endpoint.toString()) ||
         !await _p.setString('ollamaModel', model.trim()) ||
         !await _p.setString('visionModel', vision.trim())) {
-      throw StateError('Hindi na-save ang Local AI settings.');
+      throw StateError('AI connection settings could not be saved.');
     }
   }
 }

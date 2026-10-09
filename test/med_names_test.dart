@@ -15,7 +15,7 @@ void main() {
     final c = MedNames.check('Amoxicilin');
     expect(c.name, 'Amoxicillin');
     expect(c.status, NameStatus.corrected);
-    expect(c.warning, contains("'Amoxicilin' → ginawang 'Amoxicillin'"));
+    expect(c.warning, contains("'Amoxicilin' → corrected to 'Amoxicillin'"));
     expect(MedNames.correct('Metformln'), 'Metformin');
     expect(MedNames.correct('losartan'), 'Losartan');
   });

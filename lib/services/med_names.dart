@@ -2,14 +2,14 @@ enum NameStatus { known, corrected, uncertain, unknown }
 
 class NameCheck {
   NameCheck(this.name, this.status, this.warning);
-  final String name; // pangalang gagamitin (orihinal kung hindi sigurado)
+  final String name; // Name to use (original if uncertain)
   final NameStatus status;
-  final String? warning; // null = walang kailangang suriin
+  final String? warning; // null = nothing to review
 }
 
-/// Listahan ng karaniwang gamot sa Pilipinas + auto-correct ng maling basa
-/// (hal. "Amoxicilin" -> "Amoxicillin"). Offline, tumatakbo sa phone.
-/// Ang user pa rin ang huling magkukumpirma sa ConfirmScreen.
+/// Common medications in the Philippines + correction of small misreadings
+/// (e.g. "Amoxicilin" -> "Amoxicillin"). Runs offline on the phone.
+/// The user still confirms every detail on the ConfirmScreen.
 class MedNames {
   static const common = [
     // Antibiotics
@@ -20,7 +20,7 @@ class MedNames {
     // Pain / fever
     'Paracetamol', 'Ibuprofen', 'Mefenamic Acid', 'Naproxen', 'Celecoxib',
     'Tramadol', 'Aspirin',
-    // Puso / presyon
+    // Heart / blood pressure
     'Losartan', 'Amlodipine', 'Metoprolol', 'Atenolol', 'Carvedilol',
     'Bisoprolol', 'Captopril', 'Enalapril', 'Lisinopril', 'Telmisartan',
     'Valsartan', 'Hydrochlorothiazide', 'Furosemide', 'Spironolactone',
@@ -29,14 +29,14 @@ class MedNames {
     // Diabetes / cholesterol
     'Metformin', 'Gliclazide', 'Glimepiride', 'Sitagliptin',
     'Atorvastatin', 'Rosuvastatin', 'Simvastatin',
-    // Sikmura
+    // Stomach
     'Omeprazole', 'Pantoprazole', 'Esomeprazole', 'Famotidine',
     'Domperidone', 'Metoclopramide', 'Loperamide', 'Hyoscine',
-    // Allergy / ubo / hika
+    // Allergy / cough / asthma
     'Cetirizine', 'Loratadine', 'Diphenhydramine', 'Chlorphenamine',
     'Salbutamol', 'Montelukast', 'Ambroxol', 'Carbocisteine',
     'Guaifenesin', 'Lagundi', 'Sambong',
-    // Iba pa
+    // Others
     'Prednisone', 'Prednisolone', 'Dexamethasone', 'Methylprednisolone',
     'Allopurinol',
     'Colchicine', 'Levothyroxine', 'Ferrous Sulfate', 'Folic Acid',
@@ -46,9 +46,9 @@ class MedNames {
     'Gabapentin', 'Pregabalin', 'Sertraline', 'Fluoxetine',
   ];
 
-  /// Sinusuri ang nabasang pangalan. SAFETY: maliit na typo lang ang inaayos
-  /// (max 1 letra kung 5–9 letra, max 2 kung 10+; walang auto-correct kung <5).
-  /// Kapag malabo, malayo, o may kahawig na ibang gamot: hindi binabago, may babala.
+  /// Checks a name that was read. SAFETY: only small typos are corrected
+  /// (max 1 letter for 5–9 letters, max 2 for 10+; none below 5 letters).
+  /// Ambiguous, distant or look-alike names are left unchanged with a warning.
   static NameCheck check(String name) {
     final input = name.trim();
     final lower = input.toLowerCase();
@@ -63,11 +63,11 @@ class MedNames {
 
     final maxD = lower.length < 5 ? 0 : (lower.length <= 9 ? 1 : 2);
     final clearWinner =
-        secondD > bestD + 1; // walang ibang gamot na halos kasing-lapit
+        secondD > bestD + 1; // no other medication is nearly as close
     final sameStart = lower[0] == best[0].toLowerCase();
     if (bestD <= maxD && clearWinner && sameStart) {
       return NameCheck(best, NameStatus.corrected,
-          "⚠️ Nabasa: '$input' → ginawang '$best'. Pakisuri.");
+          "Read as '$input' → corrected to '$best'. Please check.");
     }
 
     final near = [
@@ -78,18 +78,18 @@ class MedNames {
       return NameCheck(
           input,
           NameStatus.uncertain,
-          "⚠️ Nabasa: '$input'. Hindi sigurado: baka ${near.map((n) => "'$n'").join(' o ')}? "
-          'Pakisuri sa reseta.');
+          "Read as '$input'. Not sure: could it be ${near.map((n) => "'$n'").join(' or ')}? "
+          'Please check your prescription.');
     }
     return NameCheck(input, NameStatus.unknown,
-        "⚠️ Wala sa listahan ng app ang '$input'. Pakisuri ang spelling sa reseta.");
+        "'$input' is not in the app's medication list. Please check the spelling on your prescription.");
   }
 
-  /// Pangalan lang (para sa lumang code).
+  /// Name only (for older callers).
   static String correct(String name) => check(name).name;
 
-  /// Nakikita ba ang pangalan sa OCR text? Pang-check kung inimbento o pinalitan
-  /// ng vision model ang gamot. Maluwag ang tolerance dahil magulo ang OCR.
+  /// Is the name visible in the OCR text? Catches medications a vision model
+  /// invented or replaced. Tolerant because OCR text is noisy.
   static bool foundInText(String name, String text) {
     final first = name.toLowerCase().split(RegExp(r'[^a-z]+')).firstWhere(
           (w) => w.isNotEmpty,
@@ -104,7 +104,7 @@ class MedNames {
         .any((w) => distance(w, first) <= maxD);
   }
 
-  /// Levenshtein distance (ilang letra ang kailangang palitan).
+  /// Levenshtein distance (number of single-letter edits).
   static int distance(String a, String b) {
     var prev = List<int>.generate(b.length + 1, (i) => i);
     for (var i = 1; i <= a.length; i++) {

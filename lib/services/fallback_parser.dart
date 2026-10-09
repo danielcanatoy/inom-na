@@ -1,5 +1,6 @@
 import '../models/medicine.dart';
 import 'med_names.dart';
+import 'review_note.dart';
 
 /// Conservative phone-only parsing. Unknown directions remain unresolved.
 class FallbackParser {
@@ -92,19 +93,19 @@ class FallbackParser {
                 frequencies.first != 24 ~/ intervals.first));
     if (conflict) {
       notes.add(
-          'Magkasalungat ang nakasulat na dalas. Itama gamit ang reseta o pharmacist.');
+          '${ReviewNote.conflict} the written frequency is contradictory. Correct it using the prescription or ask your pharmacist.');
     } else if (draft.prn) {
       kind = ScheduleKind.prn;
       interval = intervals.isEmpty ? null : intervals.single;
       if (interval != null)
         notes.add(
-            'PRN: panatilihin ang nakasulat na pagitan na $interval oras; walang awtomatikong paalala.');
+            'As needed (PRN): keep the written minimum interval of $interval hours. No automatic reminders.');
     } else if (intervals.isNotEmpty) {
       kind = ScheduleKind.interval;
       interval = intervals.single;
       if (times.isNotEmpty)
         notes.add(
-            'May nakasulat na oras. Itakda ang unang inom ayon dito bago i-save.');
+            'Clock times are written. Set the first dose to match them before saving.');
       if (times.length > 1) {
         final sorted = [...times]..sort();
         final minutes = [
@@ -122,8 +123,8 @@ class FallbackParser {
                     1440).every((gap) => gap == interval! * 60);
         if (!consistent) {
           kind = ScheduleKind.unknown;
-          notes
-              .add('Hindi tugma ang nakasulat na mga oras sa pagitan ng oras.');
+          notes.add(
+              '${ReviewNote.mismatch} the written clock times do not fit the dose interval.');
         }
       }
     } else if (times.isNotEmpty) {
@@ -131,7 +132,8 @@ class FallbackParser {
       frequency = times.length;
       if (frequencies.isNotEmpty && frequencies.single != times.length) {
         kind = ScheduleKind.unknown;
-        notes.add('Hindi tugma ang bilang ng nakasulat na oras at dalas.');
+        notes.add(
+            '${ReviewNote.mismatch} the number of written times does not match the frequency.');
       }
     } else if (frequencies.isNotEmpty) {
       kind = ScheduleKind.daily;
@@ -139,30 +141,34 @@ class FallbackParser {
       times = Medicine.defaultTimes(frequency, bedtime: draft.bedtime);
     }
     if (draft.duplicateTime)
-      notes.add('May magkaparehong nakasulat na oras; suriin ang iskedyul.');
+      notes.add(
+          'The same clock time is written more than once. Check the schedule.');
     if (draft.invalidTime) {
       kind = ScheduleKind.unknown;
-      notes.add('May hindi wastong nakasulat na oras.');
+      notes.add(
+          '${ReviewNote.invalid} a written clock time is not a valid time.');
     }
     if (draft.invalidInterval || draft.complexTiming) {
       kind = ScheduleKind.unknown;
       notes.add(
-          'Hindi malinaw o hindi suportado ang lahat ng direksyon sa oras. Itama ang iskedyul at suriin ang orihinal na direksyon.');
+          '${ReviewNote.unclear} some timing directions are unclear or not supported. Correct the schedule and check the original directions.');
     }
     if (draft.quantities.length > 1 || draft.invalidQuantity)
-      notes.add('Magkasalungat o hindi wastong dami sa bawat inom.');
+      notes.add(
+          '${ReviewNote.conflict} the amount per dose is contradictory or invalid.');
     if (draft.beforeMeal || draft.afterMeal) {
       notes.add(
-          'Suriin kung ang napiling oras ay ${draft.beforeMeal ? 'bago' : 'pagkatapos'} kumain. Hindi awtomatikong inaayos ang oras ng pagkain.');
+          'Check that the chosen times are ${draft.beforeMeal ? 'before' : 'after'} meals. Times are not adjusted to meals automatically.');
     }
     if (draft.beforeMeal && draft.afterMeal) {
       kind = ScheduleKind.unknown;
-      notes.add('Magkasalungat ang bago at pagkatapos kumain.');
+      notes.add(
+          '${ReviewNote.conflict} both before-meal and after-meal directions are written.');
     }
     final durationConflict =
         (draft.maintenance && draft.durations.isNotEmpty) ||
             draft.durations.length > 1;
-    if (durationConflict) notes.add('Magkasalungat ang haba ng gamutan.');
+    if (durationConflict) notes.add(ReviewNote.durationConflict);
     final days = !durationConflict && draft.durations.length == 1
         ? draft.durations.single
         : null;

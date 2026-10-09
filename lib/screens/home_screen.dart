@@ -8,6 +8,11 @@ import '../services/ocr.dart';
 import '../services/rx_parser.dart';
 import '../services/scheduler.dart';
 import '../services/store.dart';
+import '../ui/app_strings.dart';
+import '../ui/app_theme.dart';
+import '../ui/brand.dart';
+import '../ui/components.dart';
+import '../ui/format.dart';
 import 'confirm_screen.dart';
 import 'settings_screen.dart';
 
@@ -60,7 +65,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (!mounted || _saving) return;
     setState(() => _notice = result.success
         ? result.message
-        : result.message ?? 'Hindi handa ang mga paalala.');
+        : result.message ?? 'Reminders are not ready.');
   }
 
   List<Medicine> _snapshot() =>
@@ -81,14 +86,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           : await Scheduler.rescheduleAll(candidate);
       final notice = result.success
           ? result.message
-          : 'Naka-save ang mga gamot, ngunit ${result.message ?? "hindi nairehistro ang paalala."}';
+          : 'Your medications were saved. '
+              '${result.message ?? "The reminder could not be set."}';
       if (mounted) setState(() => _notice = notice);
       return SchedulerResult(
           success: result.success, message: notice, exact: result.exact);
     } catch (_) {
       final message = stored
-          ? 'Naka-save ang mga gamot, ngunit hindi nakumpleto ang mga paalala.'
-          : 'Hindi na-save ang pagbabago. Napanatili ang dating mga gamot.';
+          ? 'Your medications were saved, but reminders could not be fully updated.'
+          : 'The change could not be saved. Your previous medications were kept.';
       if (mounted) setState(() => _notice = message);
       return SchedulerResult(success: false, message: message);
     } finally {
@@ -96,20 +102,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
-  Future<T> _withLoading<T>(String message, Future<T> Function() action) async {
+  Future<T> _withLoading<T>(
+      String title, String message, Future<T> Function() action) async {
     final navigator = Navigator.of(context, rootNavigator: true);
     final route = DialogRoute<void>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => PopScope(
-          canPop: false,
-          child: AlertDialog(
-            content: Row(children: [
-              const CircularProgressIndicator(),
-              const SizedBox(width: 20),
-              Expanded(child: Text(message)),
-            ]),
-          )),
+      builder: (_) => ProcessingDialog(title: title, message: message),
     );
     unawaited(navigator.push<void>(route));
     try {
@@ -128,7 +127,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       if (picked == null || !mounted) return;
       var text = '';
       final result = await _withLoading(
-        'Binabasa ng Local AI ang reseta...\nPwedeng umabot ng 1–2 minuto.',
+        'Reading your prescription…',
+        'Text is recognized on this phone. If your laptop AI (Ollama) is '
+            'connected, it interprets the prescription. This can take 1–2 minutes.',
         () async {
           try {
             text = await Ocr.read(picked.path);
@@ -140,7 +141,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
       if (mounted) await _openConfirm(result, text);
     } catch (_) {
-      _snack('Hindi mabasa ang reseta. Subukan muli o i-type ang nakasulat.');
+      _snack(
+          'The prescription could not be read. Try again or type it instead.',
+          retry: () => unawaited(_scan(source)));
     } finally {
       if (mounted) setState(() => _processing = false);
     }
@@ -154,29 +157,43 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final text = await showDialog<String>(
         context: context,
         builder: (c) => AlertDialog(
-          title: const Text('I-type ang reseta'),
-          content: TextField(
-              controller: ctrl,
-              maxLines: 6,
-              decoration: const InputDecoration(
-                  hintText: 'Amoxicillin 500mg\n1 cap TID x 7 days #21',
-                  border: OutlineInputBorder())),
+          title: const Text(AppStrings.typePrescription),
+          content: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              const Text('Type or paste the prescription exactly as written. '
+                  'IMedsU reads it the same way as a scan, and you will '
+                  'review every detail before saving.'),
+              const SizedBox(height: 12),
+              TextField(
+                  controller: ctrl,
+                  maxLines: 6,
+                  minLines: 4,
+                  decoration: const InputDecoration(
+                      labelText: 'Prescription text',
+                      alignLabelWithHint: true,
+                      hintText: 'Amoxicillin 500mg\n1 cap TID x 7 days #21')),
+            ]),
+          ),
           actions: [
             TextButton(
                 onPressed: () => Navigator.pop(c),
-                child: const Text('Kanselahin')),
+                child: const Text(AppStrings.cancel)),
             FilledButton(
                 onPressed: () => Navigator.pop(c, ctrl.text),
-                child: const Text('Basahin')),
+                child: const Text('Read Prescription')),
           ],
         ),
       );
       if (text == null || text.trim().isEmpty || !mounted) return;
       final result = await _withLoading(
-          'Iniintindi ang reseta...', () => RxParser.parse(text));
+          'Reading the prescription text…',
+          'Using the laptop AI if it is connected, otherwise the offline '
+              'reader on this phone.',
+          () => RxParser.parse(text));
       if (mounted) await _openConfirm(result, text);
     } catch (_) {
-      _snack('Hindi nakumpleto ang pagbasa. Subukan muli.');
+      _snack('Reading did not finish. Please try again.',
+          retry: () => unawaited(_typeRx()));
     } finally {
       ctrl.dispose();
       if (mounted) setState(() => _processing = false);
@@ -197,9 +214,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     _snack(outcome.success
         ? outcome.message ??
             (saved.every((m) => m.isPrn)
-                ? 'Naka-save ang PRN na gamot. Walang naka-schedule na paalala para rito.'
-                : 'Naka-save at nairehistro ang paalala para sa ${saved.length} gamot.')
-        : outcome.message ?? 'Hindi nairehistro ang paalala.');
+                ? 'Saved. As-needed (PRN) medications have no scheduled reminders.'
+                : 'Saved. Reminders are set for ${saved.length} '
+                    '${saved.length == 1 ? "medication" : "medications"}.')
+        : outcome.message ?? 'The reminder could not be set.');
   }
 
   Future<void> _take(Medicine medicine, DateTime dose, bool value) async {
@@ -210,7 +228,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final result = await _commit(candidate,
         takenMedicine: value ? target : null, takenDose: value ? dose : null);
     if (result != null && !result.success) {
-      _snack(result.message ?? 'Hindi nakumpleto ang pagbabago.');
+      _snack(result.message ?? 'The change could not be completed.');
     }
   }
 
@@ -222,12 +240,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final result =
           await Scheduler.testInOneMinute(_meds.isEmpty ? null : _meds.first);
       _snack(result.success
-          ? result.message ?? 'Nairehistro ang test reminder para sa 1 minuto.'
-          : result.message ?? 'Hindi nairehistro ang test reminder.');
+          ? result.message ??
+              'Test reminder set. It should appear in about 1 minute.'
+          : result.message ?? 'The test reminder could not be set.');
       if (mounted) setState(() => _notice = result.message);
     } catch (_) {
-      _snack(
-          'Hindi nairehistro ang test reminder. Suriin ang Android settings.');
+      _snack('The test reminder could not be set. Check Android settings.');
     } finally {
       if (mounted) setState(() => _saving = false);
     }
@@ -236,42 +254,32 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void _pickSource() {
     showModalBottomSheet(
         context: context,
-        builder: (c) => SafeArea(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                ListTile(
-                    leading: const Icon(Icons.photo_camera),
-                    title: const Text('Kunan ng picture'),
-                    onTap: () {
-                      Navigator.pop(c);
-                      unawaited(_scan(ImageSource.camera));
-                    }),
-                ListTile(
-                    leading: const Icon(Icons.photo_library),
-                    title: const Text('Pumili sa gallery'),
-                    onTap: () {
-                      Navigator.pop(c);
-                      unawaited(_scan(ImageSource.gallery));
-                    }),
-                ListTile(
-                    leading: const Icon(Icons.keyboard),
-                    title: const Text('I-type na lang'),
-                    onTap: () {
-                      Navigator.pop(c);
-                      unawaited(_typeRx());
-                    }),
-              ]),
-            ));
+        isScrollControlled: true,
+        showDragHandle: true,
+        builder: (c) => _ScanSourceSheet(onSelected: (option) {
+              Navigator.pop(c);
+              switch (option) {
+                case _ScanOption.camera:
+                  unawaited(_scan(ImageSource.camera));
+                case _ScanOption.gallery:
+                  unawaited(_scan(ImageSource.gallery));
+                case _ScanOption.type:
+                  unawaited(_typeRx());
+              }
+            }));
   }
 
-  void _snack(String msg) {
-    if (mounted)
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  void _snack(String msg, {VoidCallback? retry}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg),
+      action: retry == null
+          ? null
+          : SnackBarAction(label: 'Try Again', onPressed: retry),
+    ));
   }
 
-  String _fmt(DateTime d) {
-    final h = d.hour % 12 == 0 ? 12 : d.hour % 12;
-    return '$h:${d.minute.toString().padLeft(2, '0')} ${d.hour < 12 ? "AM" : "PM"}';
-  }
+  bool get _canScan => !_saving && !_processing && Store.loadError == null;
 
   @override
   Widget build(BuildContext context) {
@@ -287,85 +295,105 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     todayDoses.sort((a, b) => a.$2.compareTo(b.$2));
     final lowStock = _meds.where(
         (m) => m.needsRefill && !m.isFinished && (m.daysLeft ?? 99) <= 3);
+    final textTheme = Theme.of(context).textTheme;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Inom Na! 💊'), actions: [
-        IconButton(
-            tooltip: 'Subukan ang paalala (1 minuto)',
-            icon: const Icon(Icons.notifications_active),
-            onPressed: _saving ? null : _testReminder),
-        IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const SettingsScreen()))),
-      ]),
-      floatingActionButton: FloatingActionButton.extended(
-          onPressed: _saving || _processing || Store.loadError != null
-              ? null
-              : _pickSource,
-          icon: const Icon(Icons.document_scanner),
-          label: const Text('I-scan ang reseta')),
+      appBar: AppBar(
+        title: const IMedsULogo(fontSize: 26),
+        actions: [
+          IconButton(
+              tooltip: 'Send a test reminder in 1 minute',
+              icon: const Icon(Icons.notifications_active_outlined),
+              onPressed: _saving ? null : _testReminder),
+          IconButton(
+              tooltip: 'Settings',
+              icon: const Icon(Icons.settings_outlined),
+              onPressed: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SettingsScreen()))),
+          const SizedBox(width: 4),
+        ],
+      ),
+      floatingActionButton: _meds.isEmpty
+          ? null
+          : FloatingActionButton.extended(
+              onPressed: _canScan ? _pickSource : null,
+              icon: const Icon(Icons.document_scanner_outlined),
+              label: const Text(AppStrings.scanPrescription)),
       body: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 104),
           children: [
-            if (_notice != null)
-              Card(
-                  color: Colors.amber.shade50,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(_notice!),
-                          if (Store.loadError == null)
-                            TextButton(
-                                onPressed: _saving
-                                    ? null
-                                    : () async {
-                                        await Scheduler.requestPermissions();
-                                        await _refreshReminders();
-                                      },
-                                child: const Text(
-                                    'Suriin / subukan muli ang paalala')),
-                        ]),
-                  )),
-            if (_saving) const LinearProgressIndicator(),
-            if (_meds.isEmpty) const _Empty(),
-            for (final m in lowStock)
-              Card(
-                  color: Colors.orange.shade100,
-                  child: ListTile(
-                      leading: const Icon(Icons.shopping_cart,
-                          color: Colors.deepOrange),
-                      title: Text('Malapit nang maubos ang ${m.name}'),
-                      subtitle: Text(
-                          '${m.daysLeft!.clamp(0, 99).floor()} araw na lang.'))),
-            if (_meds.isNotEmpty) ...[
-              Text('Ngayong araw',
-                  style: Theme.of(context).textTheme.titleLarge),
+            Text(Fmt.longDate(now),
+                style: textTheme.bodyLarge
+                    ?.copyWith(color: AppColors.textSecondary)),
+            if (_saving) ...[
               const SizedBox(height: 8),
+              const LinearProgressIndicator(),
+            ],
+            if (_notice != null)
+              InfoBanner(
+                tone: Store.loadError != null ? Tone.error : Tone.warning,
+                message: _notice,
+                action: Store.loadError != null
+                    ? null
+                    : Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton(
+                            onPressed: _saving
+                                ? null
+                                : () async {
+                                    await Scheduler.requestPermissions();
+                                    await _refreshReminders();
+                                  },
+                            child: const Text('Check Reminders Again')),
+                      ),
+              ),
+            if (_meds.isEmpty)
+              EmptyState(
+                leading: Container(
+                  width: 96,
+                  height: 96,
+                  decoration: const BoxDecoration(
+                      color: AppColors.primaryLight, shape: BoxShape.circle),
+                  alignment: Alignment.center,
+                  child: const CapsuleMark(size: 56),
+                ),
+                title: 'Welcome to IMedsU',
+                message: '${AppStrings.tagline}\n\n'
+                    'Scan a prescription or pharmacy label. You will review '
+                    'every detail before any reminder is set.',
+                action: FilledButton.icon(
+                    onPressed: _canScan ? _pickSource : null,
+                    icon: const Icon(Icons.document_scanner_outlined),
+                    label: const Text(AppStrings.scanPrescription)),
+              ),
+            for (final m in lowStock)
+              InfoBanner(
+                tone: Tone.warning,
+                title: 'Running low: ${m.name}',
+                message:
+                    'About ${m.daysLeft!.clamp(0, 99).floor()} days left based '
+                    'on your stock. Please arrange a refill.',
+              ),
+            if (_meds.isNotEmpty) ...[
+              const SectionHeader("Today's Medication Schedule",
+                  icon: Icons.today_outlined),
+              _ProgressSummary(doses: todayDoses),
+              _NextDose(meds: _meds, now: now),
               if (todayDoses.isEmpty)
-                const Text('Walang naka-schedule na gamot ngayon.'),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('No doses are scheduled for today.'),
+                ),
               for (final (m, d) in todayDoses)
-                Card(
-                    child: CheckboxListTile(
-                        value: m.isTaken(d),
-                        onChanged: _saving
-                            ? null
-                            : (v) => unawaited(_take(m, d, v == true)),
-                        title: Text('${_fmt(d)} · ${m.name} ${m.dose}'),
-                        subtitle: Text([
-                          'Dami: ${m.qtyLabel}',
-                          if (m.instructions.isNotEmpty) m.instructions,
-                        ].join(' · ')),
-                        secondary: Icon(
-                            m.isTaken(d) ? Icons.check_circle : Icons.schedule,
-                            color: m.isTaken(d)
-                                ? Colors.green
-                                : (d.isBefore(now) ? Colors.red : null)))),
-              const SizedBox(height: 16),
-              Text('Mga gamot ko',
-                  style: Theme.of(context).textTheme.titleLarge),
+                DoseCard(
+                  medicine: m,
+                  dose: d,
+                  now: now,
+                  busy: _saving,
+                  onChanged: (value) => unawaited(_take(m, d, value)),
+                ),
+              const SectionHeader('My Medications',
+                  icon: Icons.medication_outlined),
               for (final m in _meds) _medCard(m, now),
             ],
           ]),
@@ -376,69 +404,293 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final due = m.allDoses(horizon: now);
     final takenDue = due.where(m.isTaken).length;
     final total = m.totalDoses;
+    final textTheme = Theme.of(context).textTheme;
+    final lines = [
+      m.frequencyLabel,
+      if (m.times.isNotEmpty && m.scheduleKind != ScheduleKind.interval)
+        'Times: ${m.times.map(Fmt.clock).join(', ')}',
+      if (due.isNotEmpty) 'Taken so far: $takenDue of ${due.length} doses due',
+      if (total != null)
+        'Marked taken: ${m.taken.toSet().length} of $total planned doses',
+      if (m.allTaken) 'All scheduled doses are marked taken.',
+      if (m.isFinished)
+        'Schedule finished (this does not confirm every dose was taken).',
+      if (m.legacy)
+        'Saved by an earlier version: the original schedule was kept. '
+            'Compare it with your prescription.',
+    ];
     return Card(
-        child: ListTile(
-      title: Text('${m.name} ${m.dose}'),
-      subtitle: Text([
-        m.frequencyLabel,
-        if (m.legacy)
-          'Dating record: napanatili ang orihinal na iskedyul. '
-              'Hindi nito pinatutunayang tama ang dating pagbasa; ikumpara sa reseta.',
-        if (m.times.isNotEmpty && m.scheduleKind != ScheduleKind.interval)
-          'Oras: ${m.times.join(', ')}',
-        if (due.isNotEmpty) 'Nainom: $takenDue/${due.length} na dose',
-        if (total != null)
-          'Nakatalang nainom: ${m.taken.toSet().length}/$total',
-        if (m.allTaken) 'Nainom lahat ng nakatakdang dose',
-        if (m.isFinished)
-          'Natapos ang iskedyul; hindi ito patunay na nainom lahat.',
-      ].join('\n')),
-      trailing: IconButton(
-          icon: const Icon(Icons.delete_outline),
-          onPressed: _saving
-              ? null
-              : () async {
-                  final ok = await showDialog<bool>(
-                      context: context,
-                      builder: (c) => AlertDialog(
-                              title: Text('Tanggalin ang ${m.name}?'),
-                              actions: [
-                                TextButton(
-                                    onPressed: () => Navigator.pop(c, false),
-                                    child: const Text('Hindi')),
-                                FilledButton(
-                                    onPressed: () => Navigator.pop(c, true),
-                                    child: const Text('Oo')),
-                              ]));
-                  if (ok == true && mounted && !_saving) {
-                    final candidate = _snapshot()
-                      ..removeWhere((item) => item.id == m.id);
-                    final result = await _commit(candidate);
-                    if (result != null && !result.success) {
-                      _snack(
-                          result.message ?? 'Hindi nakumpleto ang pagbabago.');
-                    }
-                  }
-                }),
-    ));
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 4, 12),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${m.name} ${m.dose}'.trim(), style: textTheme.titleMedium),
+              if (m.instructions.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(m.instructions, style: textTheme.bodySmall),
+                ),
+              const SizedBox(height: 6),
+              for (final line in lines)
+                Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(line, style: textTheme.bodyMedium),
+                ),
+            ]),
+          ),
+          IconButton(
+              tooltip: 'Delete ${m.name}',
+              icon: const Icon(Icons.delete_outline),
+              onPressed: _saving
+                  ? null
+                  : () async {
+                      final ok = await showDialog<bool>(
+                          context: context,
+                          builder: (c) => AlertDialog(
+                                  title: Text('Delete ${m.name}?'),
+                                  content: const Text(
+                                      'Its reminders will be cancelled and its '
+                                      'dose history removed. This cannot be undone.'),
+                                  actions: [
+                                    TextButton(
+                                        onPressed: () =>
+                                            Navigator.pop(c, false),
+                                        child: const Text(AppStrings.cancel)),
+                                    FilledButton(
+                                        style: FilledButton.styleFrom(
+                                            backgroundColor: AppColors.error),
+                                        onPressed: () => Navigator.pop(c, true),
+                                        child: const Text(AppStrings.delete)),
+                                  ]));
+                      if (ok == true && mounted && !_saving) {
+                        final candidate = _snapshot()
+                          ..removeWhere((item) => item.id == m.id);
+                        final result = await _commit(candidate);
+                        if (result != null && !result.success) {
+                          _snack(result.message ??
+                              'The change could not be completed.');
+                        }
+                      }
+                    }),
+        ]),
+      ),
+    );
   }
 }
 
-class _Empty extends StatelessWidget {
-  const _Empty();
+/// "3 of 5 doses taken today", computed from saved taken records only.
+class _ProgressSummary extends StatelessWidget {
+  const _ProgressSummary({required this.doses});
+  final List<(Medicine, DateTime)> doses;
+
   @override
-  Widget build(BuildContext context) => const Padding(
-        padding: EdgeInsets.all(32),
-        child: Column(children: [
-          Icon(Icons.medication_outlined, size: 72),
-          SizedBox(height: 16),
-          Text('Wala pang gamot',
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          SizedBox(height: 8),
-          Text(
-              'Kunan ng picture ang reseta o label ng gamot. '
-              'Suriin muna ang detalye bago mag-set ng offline na paalala.',
-              textAlign: TextAlign.center),
+  Widget build(BuildContext context) {
+    if (doses.isEmpty) return const SizedBox.shrink();
+    final taken = doses.where((entry) => entry.$1.isTaken(entry.$2)).length;
+    final textTheme = Theme.of(context).textTheme;
+    return Card(
+      color: AppColors.primaryLight,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('$taken of ${doses.length} doses taken today',
+              style: textTheme.titleMedium
+                  ?.copyWith(color: AppColors.primaryDark)),
+          const SizedBox(height: 10),
+          // The text above already announces the count to screen readers.
+          ExcludeSemantics(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                  value: taken / doses.length, minHeight: 10),
+            ),
+          ),
         ]),
-      );
+      ),
+    );
+  }
+}
+
+/// The next scheduled dose that has not been marked taken.
+class _NextDose extends StatelessWidget {
+  const _NextDose({required this.meds, required this.now});
+  final List<Medicine> meds;
+  final DateTime now;
+
+  @override
+  Widget build(BuildContext context) {
+    (Medicine, DateTime)? next;
+    final horizon = now.add(const Duration(days: 2));
+    for (final m in meds) {
+      for (final d in m.allDoses(horizon: horizon, from: now)) {
+        if (!d.isAfter(now) || m.isTaken(d)) continue;
+        if (next == null || d.isBefore(next.$2)) next = (m, d);
+        break;
+      }
+    }
+    if (next == null) return const SizedBox.shrink();
+    final (m, d) = next;
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(d.year, d.month, d.day);
+    final when = day == today
+        ? 'Today'
+        : day == today.add(const Duration(days: 1))
+            ? 'Tomorrow'
+            : Fmt.date(d);
+    final textTheme = Theme.of(context).textTheme;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(children: [
+          const Icon(Icons.alarm, color: AppColors.primary, size: 32),
+          const SizedBox(width: 14),
+          Expanded(
+            child:
+                Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Next dose', style: textTheme.bodySmall),
+              Text('$when · ${Fmt.time(d)}', style: textTheme.titleMedium),
+              Text('${m.qtyLabel} × ${m.name} ${m.dose}'.trim(),
+                  style: textTheme.bodyMedium),
+            ]),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// One scheduled dose with its status and the Mark as Taken action.
+class DoseCard extends StatelessWidget {
+  const DoseCard({
+    super.key,
+    required this.medicine,
+    required this.dose,
+    required this.now,
+    required this.busy,
+    required this.onChanged,
+  });
+  final Medicine medicine;
+  final DateTime dose;
+  final DateTime now;
+  final bool busy;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final taken = medicine.isTaken(dose);
+    final (label, tone, icon) = taken
+        ? (AppStrings.taken, Tone.success, Icons.check_circle)
+        : dose.isAfter(now)
+            ? (AppStrings.upcoming, Tone.info, Icons.schedule)
+            : (AppStrings.notTaken, Tone.warning, Icons.radio_button_unchecked);
+    final textTheme = Theme.of(context).textTheme;
+    final details = [
+      'Amount: ${medicine.qtyLabel}',
+      if (medicine.instructions.isNotEmpty) medicine.instructions,
+    ].join(' · ');
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Wrap(
+            spacing: 12,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(Fmt.time(dose),
+                  style: textTheme.titleLarge
+                      ?.copyWith(color: AppColors.primaryDark)),
+              StatusBadge(label: label, tone: tone, icon: icon),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text('${medicine.name} ${medicine.dose}'.trim(),
+              style: textTheme.titleMedium),
+          const SizedBox(height: 2),
+          Text(details, style: textTheme.bodyMedium),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: taken
+                ? OutlinedButton.icon(
+                    onPressed: busy ? null : () => onChanged(false),
+                    icon: const Icon(Icons.undo),
+                    label: const Text('Undo: Mark as Not Taken'))
+                : FilledButton.icon(
+                    onPressed: busy ? null : () => onChanged(true),
+                    icon: const Icon(Icons.check),
+                    label: const Text(AppStrings.markAsTaken)),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+enum _ScanOption { camera, gallery, type }
+
+class _ScanSourceSheet extends StatelessWidget {
+  const _ScanSourceSheet({required this.onSelected});
+  final ValueChanged<_ScanOption> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    Widget option(
+            _ScanOption value, IconData icon, String title, String subtitle) =>
+        Card(
+          child: ListTile(
+            contentPadding:
+                const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+            leading: CircleAvatar(
+                backgroundColor: AppColors.primaryLight,
+                foregroundColor: AppColors.primaryDark,
+                child: Icon(icon)),
+            title: Text(title, style: textTheme.titleMedium),
+            subtitle: Text(subtitle),
+            onTap: () => onSelected(value),
+          ),
+        );
+    return SafeArea(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Add a Prescription', style: textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text('Choose how to add your prescription.',
+                  style: textTheme.bodyMedium),
+              const SizedBox(height: 12),
+              option(
+                  _ScanOption.camera,
+                  Icons.photo_camera_outlined,
+                  AppStrings.takePhoto,
+                  'Place the prescription flat in good light and fill the '
+                  'frame. Printed text works best.'),
+              option(
+                  _ScanOption.gallery,
+                  Icons.photo_library_outlined,
+                  AppStrings.chooseFromGallery,
+                  'Use a clear photo you already took.'),
+              option(
+                  _ScanOption.type,
+                  Icons.keyboard_outlined,
+                  AppStrings.typePrescription,
+                  'Type or paste the prescription text instead of a photo.'),
+              const SizedBox(height: 8),
+              Text(
+                  'How it works: text is recognized on this phone. If your '
+                  'laptop AI (Ollama) is connected on the same Wi-Fi or '
+                  'hotspot, the photo and text are sent to it for '
+                  'interpretation. Otherwise, the offline reader on this '
+                  'phone is used. You will review everything before saving.',
+                  style: textTheme.bodySmall),
+            ]),
+      ),
+    );
+  }
 }

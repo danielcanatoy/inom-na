@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import 'screens/home_screen.dart';
 import 'services/scheduler.dart';
 import 'services/store.dart';
+import 'ui/app_strings.dart';
+import 'ui/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,12 +19,9 @@ class InomNaApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Inom Na!',
+      title: AppStrings.appName,
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorSchemeSeed: const Color(0xFF1B7F5A),
-      ),
+      theme: AppTheme.light(),
       home: const HomeScreen(),
     );
   }

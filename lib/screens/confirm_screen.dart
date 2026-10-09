@@ -3,6 +3,10 @@ import 'package:flutter/material.dart';
 import '../models/medicine.dart';
 import '../services/med_names.dart';
 import '../services/rx_parser.dart';
+import '../ui/app_strings.dart';
+import '../ui/app_theme.dart';
+import '../ui/components.dart';
+import '../ui/format.dart';
 
 /// Every prescription field and the resulting schedule must be reviewed.
 class ConfirmScreen extends StatefulWidget {
@@ -26,7 +30,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
         ...m.validationErrors(),
         if (m.scheduleKind == ScheduleKind.interval &&
             !_startReviewed.contains(m.id))
-          'Piliin ang petsa at oras ng unang dose para sa pagitan ng oras.',
+          'Choose the date and time of the first dose for this interval.',
         if (m.scheduleKind == ScheduleKind.interval &&
             m.intervalHours != null &&
             m.intervalHours! > 0 &&
@@ -38,8 +42,8 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                             .inMinutes %
                         (m.intervalHours! * 60) !=
                     0)))
-          'Hindi tugma ang unang dose at pagitan sa nakasulat na oras. '
-              'Itama ang oras gamit ang reseta bago kumpirmahin.',
+          'The first dose and interval do not match the written times. '
+              'Correct the times using your prescription before verifying.',
       ];
 
   void _verify(Medicine m) {
@@ -53,14 +57,14 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
 
   void _save() {
     if (_meds.isEmpty) {
-      _message('Magdagdag muna ng gamot.');
+      _message('Add a medication first.');
       return;
     }
     for (final m in _meds) {
       final errors = _errors(m);
       if (errors.isNotEmpty || !_verified.contains(m.id)) {
         _message(errors.isEmpty
-            ? 'Suriin at kumpirmahin ang bawat gamot at iskedyul bago i-save.'
+            ? 'Review and verify each medication and its schedule before saving.'
             : errors.join('\n'));
         return;
       }
@@ -68,77 +72,139 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
     Navigator.pop(context, _meds);
   }
 
+  bool get _usedLaptopAi => widget.result.source != RxParser.srcOffline;
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-        appBar: AppBar(title: const Text('Tama ba ang nabasa?')),
-        body: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
-          children: [
-            Card(
-                child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Binasa ng: ${widget.result.source}'),
-                    if (widget.result.note != null) Text(widget.result.note!),
-                    const SizedBox(height: 8),
-                    const Text(
-                        'Maaaring magkamali ang OCR at AI, kahit kilala ang pangalan. '
-                        'Ikumpara ang bawat detalye at iskedyul sa reseta. '
-                        'Kung malabo ang bilin o sulat-kamay, itanong sa doktor o pharmacist.',
-                        style: TextStyle(fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 6),
-                    const Text(
-                        'Maaaring ipadala ang larawan at OCR text sa Ollama laptop '
-                        'sa lokal na network. Hindi encrypted ang HTTP connection. '
-                        'Sa phone naka-save ang mga gamot at paalala.',
-                        style: TextStyle(fontSize: 12)),
-                  ]),
-            )),
-            ExpansionTile(
-                title: const Text('Orihinal na text na nabasa'),
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    final verifiedCount = _meds.where((m) => _verified.contains(m.id)).length;
+    return Scaffold(
+      appBar: AppBar(title: const Text('Review Prescription')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child:
+                  Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Icon(
+                    _usedLaptopAi
+                        ? Icons.laptop_chromebook_outlined
+                        : Icons.phone_android_outlined,
+                    color: AppColors.primary),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Read by', style: textTheme.bodySmall),
+                        Text(widget.result.source,
+                            style: textTheme.titleMedium),
+                        if (widget.result.note != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(widget.result.note!,
+                                style: textTheme.bodyMedium),
+                          ),
+                      ]),
+                ),
+              ]),
+            ),
+          ),
+          const InfoBanner(
+            tone: Tone.warning,
+            title: 'Check every detail',
+            message: '${AppStrings.reviewWarning} Text recognition and AI '
+                'can make mistakes, even when a medication name is '
+                'recognized.',
+          ),
+          Text(
+              'Privacy: the photo and the text read from it may be sent to '
+              'the Ollama AI on your laptop over your local network '
+              '(unencrypted HTTP). Your medications and reminders are '
+              'saved on this phone.',
+              style: textTheme.bodySmall),
+          const SizedBox(height: 8),
+          Card(
+            clipBehavior: Clip.antiAlias,
+            child: ExpansionTile(
+                leading: const Icon(Icons.notes_outlined),
+                title: const Text('Original text read from prescription'),
                 children: [
                   Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: SelectableText(
-                          widget.rawText.isEmpty ? '(wala)' : widget.rawText)),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: SelectableText(
+                            widget.rawText.isEmpty ? '(none)' : widget.rawText),
+                      )),
                 ]),
-            for (final m in _meds)
-              _MedEditor(
-                key: ValueKey(m.id),
-                med: m,
-                warning: widget.result.warnings[m.id],
-                verified: _verified.contains(m.id),
-                startReviewed: _startReviewed.contains(m.id),
-                onChanged: () => setState(() => _verified.remove(m.id)),
-                onStartReviewed: () => setState(() {
-                  _startReviewed.add(m.id);
-                  _verified.remove(m.id);
-                }),
-                onVerify: () => _verify(m),
-                onRemove: () => setState(() {
-                  _meds.remove(m);
-                  _verified.remove(m.id);
-                  _startReviewed.remove(m.id);
-                }),
-              ),
-            OutlinedButton.icon(
-                onPressed: () => setState(
-                    () => _meds.add(Medicine(id: Medicine.newId(), name: ''))),
-                icon: const Icon(Icons.add),
-                label: const Text('Magdagdag ng gamot')),
-          ],
-        ),
-        bottomNavigationBar: SafeArea(
+          ),
+          if (_meds.isEmpty)
+            const EmptyState(
+              title: 'No medications found',
+              message: 'Try again with a clearer photo, type the '
+                  'prescription, or add a medication below.',
+            ),
+          if (_meds.isNotEmpty)
+            SectionHeader(
+                '${_meds.length} ${_meds.length == 1 ? "medication" : "medications"} found',
+                subtitle: '$verifiedCount of ${_meds.length} verified'),
+          for (final (index, m) in _meds.indexed)
+            _MedEditor(
+              key: ValueKey(m.id),
+              index: index + 1,
+              med: m,
+              warning: widget.result.warnings[m.id],
+              verified: _verified.contains(m.id),
+              startReviewed: _startReviewed.contains(m.id),
+              errors: _errors(m),
+              onChanged: () => setState(() => _verified.remove(m.id)),
+              onStartReviewed: () => setState(() {
+                _startReviewed.add(m.id);
+                _verified.remove(m.id);
+              }),
+              onVerify: () => _verify(m),
+              onRemove: () => setState(() {
+                _meds.remove(m);
+                _verified.remove(m.id);
+                _startReviewed.remove(m.id);
+              }),
+            ),
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+              onPressed: () => setState(
+                  () => _meds.add(Medicine(id: Medicine.newId(), name: ''))),
+              icon: const Icon(Icons.add),
+              label: const Text(AppStrings.addMedication)),
+        ],
+      ),
+      // Raised by the keyboard height so Save stays reachable while typing;
+      // snack bars float above it instead of covering it.
+      bottomNavigationBar: Padding(
+        padding:
+            EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+        child: Material(
+          color: AppColors.surface,
+          elevation: 8,
+          child: SafeArea(
+            top: false,
             child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: FilledButton.icon(
-              onPressed: _save,
-              icon: const Icon(Icons.alarm_on),
-              label: const Text('Tama na, i-set ang paalala')),
-        )),
-      );
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                    onPressed: _save,
+                    icon: const Icon(Icons.alarm_on),
+                    label: const Text(AppStrings.saveAndSetReminders)),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 enum _DurationChoice { unknown, days, end, maintenance }
@@ -146,18 +212,22 @@ enum _DurationChoice { unknown, days, end, maintenance }
 class _MedEditor extends StatefulWidget {
   const _MedEditor({
     super.key,
+    required this.index,
     required this.med,
     required this.verified,
     required this.startReviewed,
+    required this.errors,
     required this.onChanged,
     required this.onStartReviewed,
     required this.onVerify,
     required this.onRemove,
     this.warning,
   });
+  final int index;
   final Medicine med;
   final bool verified;
   final bool startReviewed;
+  final List<String> errors;
   final VoidCallback onChanged;
   final VoidCallback onStartReviewed;
   final VoidCallback onVerify;
@@ -229,7 +299,7 @@ class _MedEditorState extends State<_MedEditor> {
         .entries
         .any((entry) => entry.key != index && entry.value == value)) {
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Nakalagay na ang oras na ito.')));
+          const SnackBar(content: Text('This time has already been added.')));
       return;
     }
     _change(() {
@@ -242,91 +312,132 @@ class _MedEditorState extends State<_MedEditor> {
     });
   }
 
-  InputDecoration _dec(String label, [String? hint]) => InputDecoration(
-      labelText: label,
-      hintText: hint,
-      isDense: true,
-      border: const OutlineInputBorder());
+  InputDecoration _dec(String label, [String? hint, String? helper]) =>
+      InputDecoration(
+          labelText: label,
+          hintText: hint,
+          helperText: helper,
+          helperMaxLines: 3);
+
+  // Long values wrap inside the field instead of overflowing (see layout test).
+  Widget _dropdown<T>({
+    required T value,
+    required String label,
+    required List<(T, String)> items,
+    required ValueChanged<T> onChanged,
+  }) =>
+      DropdownButtonFormField<T>(
+        value: value,
+        isExpanded: true,
+        isDense: false,
+        itemHeight: null,
+        decoration: _dec(label),
+        items: [
+          for (final (itemValue, text) in items)
+            DropdownMenuItem(value: itemValue, child: Text(text)),
+        ],
+        onChanged: (selected) {
+          if (selected != null) onChanged(selected);
+        },
+      );
 
   @override
   Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
     final nameWarning = MedNames.check(m.name).warning;
-    final errors = m.validationErrors();
-    final preview = errors.isEmpty
+    final errors = widget.errors;
+    final valid = m.validationErrors().isEmpty;
+    final preview = valid
         ? m.allDoses(
             from: m.start, horizon: m.start.add(const Duration(days: 2)))
         : <DateTime>[];
+    final warnings = [
+      if (widget.warning != null) ...widget.warning!.split('\n'),
+      if (nameWarning != null && !(widget.warning ?? '').contains(nameWarning))
+        nameWarning,
+      for (final note in m.reviewNotes)
+        if (!(widget.warning ?? '').contains(note)) note,
+    ].where((line) => line.trim().isNotEmpty).toList();
+    final (statusLabel, statusTone) = widget.verified
+        ? (AppStrings.verified, Tone.success)
+        : errors.isEmpty
+            ? (AppStrings.readyToVerify, Tone.info)
+            : ('${AppStrings.needsAttention} (${errors.length})', Tone.warning);
+
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppTheme.radius + 2),
+        side: BorderSide(
+            color: widget.verified ? AppColors.success : AppColors.divider,
+            width: widget.verified ? 2 : 1),
+      ),
       child: Padding(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (widget.warning != null)
-            Text('Babala mula sa unang pagbasa:\n${widget.warning!}'),
-          if (nameWarning != null) Text(nameWarning),
-          for (final note in m.reviewNotes) Text('Suriin: $note'),
-          const SizedBox(height: 8),
-          Row(children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Expanded(
-                child: TextFormField(
-                    initialValue: m.name,
-                    decoration: _dec('Gamot', 'hal. Amoxicillin'),
-                    onChanged: (v) => _change(() => m.name = v.trim()))),
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 6,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text('${AppStrings.medication} ${widget.index}',
+                      style: textTheme.titleMedium),
+                  StatusBadge(label: statusLabel, tone: statusTone),
+                ],
+              ),
+            ),
             IconButton(
-                onPressed: widget.onRemove, icon: const Icon(Icons.close)),
+                tooltip: 'Remove this medication',
+                onPressed: widget.onRemove,
+                icon: const Icon(Icons.close)),
           ]),
-          const SizedBox(height: 10),
-          Row(children: [
-            Expanded(
-                child: TextFormField(
-                    initialValue: m.dose,
-                    decoration: _dec('Dose / strength', 'hal. 500 mg'),
-                    onChanged: (v) => _change(() => m.dose = v.trim()))),
-            const SizedBox(width: 8),
-            Expanded(
-                child: TextFormField(
-                    initialValue: m.qtyPerIntake > 0 ? m.qtyLabel : '',
-                    keyboardType:
-                        const TextInputType.numberWithOptions(decimal: true),
-                    decoration: _dec('Dami kada inom', 'hal. 1 tablet o 5 mL'),
-                    onChanged: (v) => _change(
-                        () => m.qtyPerIntake = double.tryParse(v) ?? 0))),
-          ]),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<ScheduleKind>(
+          if (warnings.isNotEmpty)
+            InfoBanner(
+                tone: Tone.warning,
+                title: 'Please check (noted when the prescription was read)',
+                lines: warnings),
+          const SectionHeader('Medicine', icon: Icons.medication_outlined),
+          TextFormField(
+              initialValue: m.name,
+              decoration: _dec('Medication name', 'e.g. Amoxicillin'),
+              textCapitalization: TextCapitalization.words,
+              onChanged: (v) => _change(() => m.name = v.trim())),
+          const SizedBox(height: 12),
+          TextFormField(
+              initialValue: m.dose,
+              decoration: _dec('Strength / dose', 'e.g. 500 mg'),
+              onChanged: (v) => _change(() => m.dose = v.trim())),
+          const SizedBox(height: 12),
+          TextFormField(
+              initialValue: m.qtyPerIntake > 0 ? m.qtyLabel : '',
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: _dec('Amount per dose', 'e.g. 1 or 0.5',
+                  'Number of tablets, capsules or mL each time.'),
+              onChanged: (v) =>
+                  _change(() => m.qtyPerIntake = double.tryParse(v) ?? 0)),
+          const SectionHeader('Schedule', icon: Icons.schedule),
+          _dropdown<ScheduleKind>(
             value: m.scheduleKind,
-            // Fit the card width and wrap long values instead of overflowing.
-            isExpanded: true,
-            isDense: false,
-            itemHeight: null,
-            decoration: _dec('Uri ng iskedyul ayon sa reseta'),
+            label: 'Schedule type (as prescribed)',
             items: const [
-              DropdownMenuItem(
-                  value: ScheduleKind.unknown, child: Text('Hindi pa malinaw')),
-              DropdownMenuItem(
-                  value: ScheduleKind.daily,
-                  child: Text('Bilang kada araw (OD/BID/TID/QID)')),
-              DropdownMenuItem(
-                  value: ScheduleKind.interval,
-                  child: Text('Eksaktong pagitan (q6h/q8h)')),
-              DropdownMenuItem(
-                  value: ScheduleKind.explicit,
-                  child: Text('Nakasulat na oras')),
-              DropdownMenuItem(
-                  value: ScheduleKind.prn,
-                  child: Text('Kapag kailangan (PRN, walang paalala)')),
+              (ScheduleKind.unknown, 'Not clear yet'),
+              (ScheduleKind.daily, 'Times per day (OD/BID/TID/QID)'),
+              (ScheduleKind.interval, 'Exact interval (q6h/q8h)'),
+              (ScheduleKind.explicit, 'Written clock times'),
+              (ScheduleKind.prn, 'As needed (PRN, no reminders)'),
             ],
-            onChanged: (kind) {
-              if (kind != null) _change(() => m.scheduleKind = kind);
-            },
+            onChanged: (kind) => _change(() => m.scheduleKind = kind),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           if (m.scheduleKind == ScheduleKind.daily)
             TextFormField(
                 key: const ValueKey('daily-frequency'),
                 initialValue: m.frequencyPerDay?.toString() ?? '',
                 keyboardType: TextInputType.number,
-                decoration: _dec('Bilang kada araw'),
+                decoration: _dec('Times per day'),
                 onChanged: (v) =>
                     _change(() => m.frequencyPerDay = int.tryParse(v))),
           if (m.scheduleKind == ScheduleKind.interval) ...[
@@ -334,119 +445,153 @@ class _MedEditorState extends State<_MedEditor> {
                 key: const ValueKey('interval-hours'),
                 initialValue: m.intervalHours?.toString() ?? '',
                 keyboardType: TextInputType.number,
-                decoration: _dec('Pagitan sa oras', 'hal. 8 para sa q8h'),
+                decoration: _dec('Hours between doses', 'e.g. 8 for q8h'),
                 onChanged: (v) =>
                     _change(() => m.intervalHours = int.tryParse(v))),
             if (m.times.isNotEmpty)
-              Text('Nabasa sa reseta: ${m.times.join(', ')}. '
-                  'Gamitin sa pagpili ng unang dose; hindi ito kapalit ng pagitan.'),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                    'Written on the prescription: '
+                    '${m.times.map(Fmt.clock).join(', ')}. Use this to choose '
+                    'the first dose; it does not replace the interval.',
+                    style: textTheme.bodyMedium),
+              ),
             if (!widget.startReviewed)
-              const Text('Kailangang piliin ang unang dose sa ibaba.'),
+              const InfoBanner(
+                  tone: Tone.info,
+                  message: 'Choose the first dose date and time below.'),
           ],
           if (m.scheduleKind == ScheduleKind.daily ||
               m.scheduleKind == ScheduleKind.explicit ||
               m.scheduleKind == ScheduleKind.interval) ...[
-            Text(m.scheduleKind == ScheduleKind.daily
-                ? 'Mungkahing oras para sa dalas kada araw. Ayusin ayon sa reseta bago kumpirmahin.'
-                : m.scheduleKind == ScheduleKind.interval
-                    ? 'Mga nakasulat na oras para sa interval. Itama kung mali ang basa; '
-                        'dapat tumugma ang unang dose at pagitan sa mga ito.'
-                    : 'Nabasa o inilagay na oras. Ikumpara sa reseta bago kumpirmahin.'),
-            Wrap(spacing: 6, children: [
+            const SizedBox(height: 8),
+            Text(
+                m.scheduleKind == ScheduleKind.daily
+                    ? 'Suggested times for this daily frequency. Adjust them '
+                        'to match your prescription before verifying.'
+                    : m.scheduleKind == ScheduleKind.interval
+                        ? 'Written times for this interval. Correct any '
+                            'misread time; the first dose and interval must '
+                            'match them.'
+                        : 'Times read or entered. Compare them with your '
+                            'prescription before verifying.',
+                style: textTheme.bodySmall),
+            const SizedBox(height: 6),
+            Wrap(spacing: 8, runSpacing: 8, children: [
               for (var i = 0; i < m.times.length; i++)
                 InputChip(
-                    label: Text(m.times[i]),
+                    label: Text(Fmt.clock(m.times[i])),
+                    tooltip: 'Change this time',
+                    deleteButtonTooltipMessage: 'Remove this time',
                     onPressed: () => _editTime(i),
                     onDeleted: () => _change(() => m.times.removeAt(i))),
               ActionChip(
                   avatar: const Icon(Icons.add, size: 18),
-                  label: const Text('Oras'),
+                  label: const Text('Add Time'),
                   onPressed: () => _editTime(null)),
             ]),
           ],
-          TextButton(
-              onPressed: _pickStart,
-              child: Text('Simula / unang dose: ${Medicine.keyOf(m.start)}')),
-          const SizedBox(height: 10),
-          DropdownButtonFormField<_DurationChoice>(
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+                onPressed: _pickStart,
+                icon: const Icon(Icons.event_outlined),
+                label: Text('First dose / start: ${Fmt.dateTime(m.start)}')),
+          ),
+          const SectionHeader('Duration', icon: Icons.date_range_outlined),
+          _dropdown<_DurationChoice>(
             value: _duration,
-            isExpanded: true,
-            isDense: false,
-            itemHeight: null,
-            decoration: _dec('Tagal ayon sa reseta'),
+            label: 'How long to take it (as prescribed)',
             items: const [
-              DropdownMenuItem(
-                  value: _DurationChoice.unknown,
-                  child: Text('Hindi pa malinaw')),
-              DropdownMenuItem(
-                  value: _DurationChoice.days, child: Text('Bilang ng araw')),
-              DropdownMenuItem(
-                  value: _DurationChoice.end,
-                  child: Text('Petsa at oras ng pagtatapos')),
-              DropdownMenuItem(
-                  value: _DurationChoice.maintenance,
-                  child: Text('Maintenance (kumpirmadong tuloy-tuloy)')),
+              (_DurationChoice.unknown, 'Not clear yet'),
+              (_DurationChoice.days, 'Number of days'),
+              (_DurationChoice.end, 'Until an end date and time'),
+              (_DurationChoice.maintenance, 'Ongoing (confirmed maintenance)'),
             ],
-            onChanged: (choice) {
-              if (choice == null) return;
-              _change(() {
-                _duration = choice;
-                if (choice != _DurationChoice.days) m.days = null;
-                if (choice != _DurationChoice.end) m.end = null;
-                m.durationConfirmed = choice == _DurationChoice.maintenance ||
-                    (choice == _DurationChoice.days &&
-                        m.days != null &&
-                        m.days! > 0) ||
-                    (choice == _DurationChoice.end && m.end != null);
-              });
-            },
+            onChanged: (choice) => _change(() {
+              _duration = choice;
+              if (choice != _DurationChoice.days) m.days = null;
+              if (choice != _DurationChoice.end) m.end = null;
+              m.durationConfirmed = choice == _DurationChoice.maintenance ||
+                  (choice == _DurationChoice.days &&
+                      m.days != null &&
+                      m.days! > 0) ||
+                  (choice == _DurationChoice.end && m.end != null);
+            }),
           ),
           if (_duration == _DurationChoice.days)
             Padding(
-                padding: const EdgeInsets.only(top: 10),
+                padding: const EdgeInsets.only(top: 12),
                 child: TextFormField(
                     key: const ValueKey('duration-days'),
                     initialValue: m.days?.toString() ?? '',
                     keyboardType: TextInputType.number,
-                    decoration: _dec('Ilang araw'),
+                    decoration: _dec('How many days'),
                     onChanged: (v) => _change(() {
                           m.days = int.tryParse(v);
                           m.end = null;
                           m.durationConfirmed = m.days != null && m.days! > 0;
                         }))),
           if (_duration == _DurationChoice.end)
-            TextButton(
-                onPressed: _pickEnd,
-                child: Text(m.end == null
-                    ? 'Piliin ang pagtatapos'
-                    : 'Wala nang dose mula: ${Medicine.keyOf(m.end!)}')),
-          const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                    onPressed: _pickEnd,
+                    icon: const Icon(Icons.event_busy_outlined),
+                    label: Text(m.end == null
+                        ? 'Choose the end date and time'
+                        : 'No more doses from: ${Fmt.dateTime(m.end!)}')),
+              ),
+            ),
+          const SectionHeader('Other details', icon: Icons.notes_outlined),
           TextFormField(
               initialValue: m.stock?.toString() ?? '',
               keyboardType: TextInputType.number,
-              decoration: _dec('Stock / dami na nabili', 'optional'),
+              decoration: _dec('Quantity bought (optional)', 'e.g. 21',
+                  'Used for the running-low reminder.'),
               onChanged: (v) => _change(() => m.stock = int.tryParse(v))),
-          const SizedBox(height: 10),
+          const SizedBox(height: 12),
           TextFormField(
               initialValue: m.instructions,
               maxLines: null,
-              decoration: _dec('Bilin (panatilihin at linawin ang malabo)'),
+              decoration: _dec('Directions as written', null,
+                  'Keep the original wording. Clarify anything unclear with your pharmacist.'),
               onChanged: (v) => _change(() => m.instructions = v.trim())),
-          const SizedBox(height: 10),
           if (errors.isNotEmpty)
-            Text(errors.join('\n'),
-                style: TextStyle(color: Colors.red.shade800)),
+            InfoBanner(
+                tone: Tone.error, title: 'Fix before verifying', lines: errors),
           if (preview.isNotEmpty) ...[
-            const Text('Unang mga nakatakdang dose:'),
-            Text(preview.take(8).map(Medicine.keyOf).join('\n')),
+            const SectionHeader('Schedule preview',
+                icon: Icons.event_note_outlined,
+                subtitle: 'First doses from the start'),
+            for (final dose in preview.take(8))
+              Padding(
+                padding: const EdgeInsets.only(bottom: 2),
+                child: Text('•  ${Fmt.dateTime(dose)}',
+                    style: textTheme.bodyMedium),
+              ),
           ],
           if (m.scheduleEnd != null)
-            Text('Wala nang dose mula: ${Medicine.keyOf(m.scheduleEnd!)}'),
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text('No more doses from: ${Fmt.dateTime(m.scheduleEnd!)}',
+                  style: textTheme.bodyMedium
+                      ?.copyWith(fontWeight: FontWeight.w600)),
+            ),
+          const SizedBox(height: 8),
+          const Divider(),
           CheckboxListTile(
               contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
               value: widget.verified,
-              title: const Text('Nasuri ko na ang pangalan, dose, dami, '
-                  'bilin, tagal at iskedyul sa reseta.'),
+              title: Text(AppStrings.iveVerifiedThis,
+                  style: textTheme.titleMedium),
+              subtitle: const Text('I checked the name, strength, amount, '
+                  'directions, duration and schedule against my prescription.'),
               onChanged: (checked) {
                 if (checked == true) {
                   widget.onVerify();
